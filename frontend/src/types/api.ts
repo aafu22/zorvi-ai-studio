@@ -227,3 +227,28 @@ export interface MarketingResponse {
   content: MarketingContent;
   warnings: string[];
 }
+
+/* ------------------------------------------------------------------ auth */
+
+export interface AuthUser {
+  id: number;
+  name: string;
+  email: string;
+  email_verified: boolean;
+}
+
+export interface SignupResponse {
+  user: AuthUser;
+  /** True when the account must verify its email first; there is no token in that case. */
+  verification_required: boolean;
+  token: string | null;
+}
+
+export interface MessageResponse {
+  message: string;
+}
+
+export interface AuthResponse {
+  token: string;
+  user: AuthUser;
+}

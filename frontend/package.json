@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev:https": "next dev -p 3000 --experimental-https --experimental-https-key ../certs/localhost-key.pem --experimental-https-cert ../certs/localhost.pem"
   },
   "dependencies": {
     "lucide-react": "^0.460.0",

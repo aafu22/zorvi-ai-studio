@@ -1,0 +1,22 @@
+# Production HTTPS with Caddy (https://caddyserver.com): free certificates from Let's Encrypt,
+# renewed automatically. The site and the API share one address, so no CORS setup is needed.
+#
+# Before you start:
+#   1. Point your domain's DNS A/AAAA record at this server and open ports 80 and 443.
+#   2. Run the backend and frontend on this server (see README "Going live with HTTPS").
+#   3. Start Caddy from this folder:   APP_DOMAIN=zorvi.example.com caddy run --config Caddyfile
+
+{$APP_DOMAIN} {
+	encode gzip
+
+	# Backend API (FastAPI, port 8000) and its interactive docs
+	@backend path /api/* /docs /docs/* /openapi.json
+	handle @backend {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# Everything else is the website (Next.js, port 3000)
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}

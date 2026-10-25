@@ -1,4 +1,6 @@
 import type {
+  AuthResponse,
+  AuthUser,
   BrandKit,
   BrandKitInput,
   CampaignSummary,
@@ -10,9 +12,11 @@ import type {
   GraphicOptions,
   GraphicRequestBody,
   HealthResponse,
+  MessageResponse,
   MarketingRequestBody,
   MarketingResponse,
   ProcessOptions,
+  SignupResponse,
   UploadedImage,
 } from "@/types/api";
 
@@ -196,3 +200,44 @@ export const generateMarketingTemplate = (body: MarketingRequestBody) =>
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
   });
+
+/* ------------------------------------------------------------------ auth */
+
+export const apiSignup = (body: { name: string; email: string; password: string }) =>
+  apiFetch<SignupResponse>("/api/auth/signup", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+
+export const apiLogin = (body: { email: string; password: string }) =>
+  apiFetch<AuthResponse>("/api/auth/login", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+
+export const apiMe = (token: string) =>
+  apiFetch<AuthUser>("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } });
+
+export async function apiLogout(token: string): Promise<void> {
+  await request("/api/auth/logout", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+const postJson = <T,>(path: string, body: unknown) =>
+  apiFetch<T>(path, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) });
+
+export const apiVerifyEmail = (token: string) =>
+  postJson<MessageResponse>("/api/auth/verify-email", { token });
+
+export const apiResendVerification = (email: string) =>
+  postJson<MessageResponse>("/api/auth/resend-verification", { email });
+
+export const apiForgotPassword = (email: string) =>
+  postJson<MessageResponse>("/api/auth/forgot-password", { email });
+
+export const apiResetPassword = (token: string, password: string) =>
+  postJson<MessageResponse>("/api/auth/reset-password", { token, password });

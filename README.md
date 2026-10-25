@@ -105,6 +105,69 @@ npm run build
 7. Test **AI Marketing Brain** separately with a valid key. Confirm the backend is calling Gemini and the returned text is model-generated. Test missing-key and provider-error messages too.
 8. Refresh the browser and reopen saved products/projects.
 
+## Accounts: sign up, sign in, email verification, password reset
+
+The sidebar has **Sign in** / **Create account**. Pages: `/signup`, `/login`, `/verify-email`, `/forgot-password`, `/reset-password`.
+
+- Accounts live in the backend SQLite database (`backend/storage/zorvi.db`). Passwords are hashed with scrypt; the plain password is never stored. An older database is upgraded automatically, and accounts that existed before verification was added count as verified.
+- **Email verification:** a new account gets an email with a link (valid 24 hours, single use) and cannot sign in until it is clicked. Turn this off with `REQUIRE_EMAIL_VERIFICATION=false` in `backend/.env`.
+- **Password reset:** "Forgot password?" on the sign-in page emails a link (valid 60 minutes, single use). Resetting signs the account out everywhere. The "forgot password" and "resend verification" answers are identical whether or not the email has an account, and are limited to 3 emails per address per 15 minutes.
+- **Sessions:** a successful sign-in returns a token (valid 30 days) kept in the browser's `localStorage`; signing out deletes it on the server too. After 8 wrong passwords for one email, sign-in pauses for 15 minutes (resets when the backend restarts).
+- API: `POST /api/auth/signup`, `login`, `logout`, `verify-email`, `resend-verification`, `forgot-password`, `reset-password`, and `GET /api/auth/me` (token sent as `Authorization: Bearer <token>`). To require sign-in on a backend route, add `user: UserOut = Depends(get_current_user)` (from `app.api.auth`).
+- Existing features still work without signing in; sign-in is optional and does not yet separate one user's saved data from another's.
+
+### Email while developing (no mail account needed)
+
+Leave `SMTP_HOST` empty in `backend/.env`. Instead of sending, the backend **prints each email, including its link, in the backend terminal** (between `===== DEV EMAIL` lines). Copy the link into your browser to verify an account or reset a password.
+
+### Sending real emails
+
+Fill in the SMTP settings in `backend/.env` (see `.env.example`) and restart the backend. For Gmail, turn on 2-step verification, create an *App password* at https://myaccount.google.com/apppasswords, and use `smtp.gmail.com`, port `587`, your Gmail address as `SMTP_USERNAME` and the app password as `SMTP_PASSWORD`. Set `FRONTEND_URL` to the address people use to open the site, because that is what the email links point to. Mail failures are logged in the backend terminal and never break the page.
+
+## HTTPS
+
+Browsers only allow secure behaviour (and people should only type passwords) over HTTPS. The app itself does not handle certificates: local development uses a locally trusted certificate, and production uses a reverse proxy or a hosting platform that provides HTTPS. What the code does: adds security headers, can redirect HTTP to HTTPS, and sends the HSTS header in production.
+
+### Local HTTPS (optional, Windows/macOS/Linux)
+
+1. Install [mkcert](https://github.com/FiloSottile/mkcert#installation) (for example `choco install mkcert` or `scoop install mkcert` on Windows), then run once: `mkcert -install`
+2. In the project root (the folder containing `backend` and `frontend`):
+   ```powershell
+   mkdir certs
+   mkcert -key-file certs/localhost-key.pem -cert-file certs/localhost.pem localhost 127.0.0.1
+   ```
+   `certs/` is git-ignored; never commit the key.
+3. `backend/.env`: set `CORS_ORIGINS=https://localhost:3000` and `FRONTEND_URL=https://localhost:3000`. Start the backend from `backend`:
+   ```powershell
+   uvicorn app.main:app --reload --port 8000 --ssl-keyfile ../certs/localhost-key.pem --ssl-certfile ../certs/localhost.pem
+   ```
+4. `frontend/.env.local`: set `NEXT_PUBLIC_API_URL=https://localhost:8000`. Start the frontend from `frontend`:
+   ```powershell
+   npm run dev:https
+   ```
+5. Open https://localhost:3000. A page served over HTTPS cannot call an `http://` backend (the browser blocks it), so the frontend and backend must both use HTTPS or both use HTTP.
+
+### Going live with HTTPS (production)
+
+Hosting platforms such as Render, Railway, Fly.io, Vercel and Netlify give you HTTPS automatically. On your own server, use the included [Caddy](https://caddyserver.com) setup, which gets and renews free certificates by itself:
+
+1. Point your domain at the server and open ports 80 and 443.
+2. `backend/.env`:
+   ```dotenv
+   APP_ENV=production
+   FORCE_HTTPS=true
+   CORS_ORIGINS=https://zorvi.example.com
+   FRONTEND_URL=https://zorvi.example.com
+   # plus the SMTP_* settings, so verification and reset emails are really sent
+   ```
+3. `frontend/.env.local`: `NEXT_PUBLIC_API_URL=https://zorvi.example.com` and `ENABLE_HSTS=true`, then `npm run build` (the API address is fixed into the build).
+4. Run the apps without `--reload`: `uvicorn app.main:app --host 127.0.0.1 --port 8000` in `backend`, and `npm start` in `frontend`.
+5. From the `deploy` folder: `APP_DOMAIN=zorvi.example.com caddy run --config Caddyfile`. The site and API then share one HTTPS address.
+
+If the proxy runs on a different machine than the backend, start uvicorn with `--forwarded-allow-ips <proxy address>` so `FORCE_HTTPS` can tell the original request was HTTPS. HSTS makes browsers refuse plain HTTP for the whole host name for a year, so enable it only on the real production domain.
+
+Still not included: two-factor sign-in, "sign out everywhere" on demand, account deletion, and per-user separation of saved projects. Review these before storing real customer data.
+
 ## Storage, privacy and limitations
 
 - Photo Assistant product records, image blobs and analysis are saved in **IndexedDB in the current browser on the current device**. They are not synced across browsers/devices and may be deleted if site data is cleared.

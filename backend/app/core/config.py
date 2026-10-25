@@ -29,6 +29,27 @@ class Settings(BaseSettings):
     # Folder holding the demo product photo. Empty = <repo>/sample_assets.
     sample_assets_dir: str = ""
 
+    # ---- Accounts: email verification and password reset
+    # Public address of the website. Used to build the links inside emails.
+    frontend_url: str = "http://localhost:3000"
+    # When true, a new account must click the emailed link before it can sign in.
+    require_email_verification: bool = True
+    verification_token_hours: int = Field(default=24, ge=1)
+    reset_token_minutes: int = Field(default=60, ge=5)
+    # Outgoing email (SMTP). Leave smtp_host empty in development: emails are then printed
+    # in the backend terminal instead of being sent.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""  # e.g. "Zorvi AI Studio <you@example.com>"; empty = smtp_username
+    smtp_use_ssl: bool = False  # true = implicit TLS (port 465); false = STARTTLS (port 587)
+
+    # ---- HTTPS
+    # Redirect plain-HTTP requests to HTTPS. Turn on when the site is served over HTTPS
+    # (normally behind a reverse proxy such as Caddy or nginx; see deploy/Caddyfile).
+    force_https: bool = False
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
@@ -44,6 +65,14 @@ class Settings(BaseSettings):
             p = Path(self.sample_assets_dir)
             return p if p.is_absolute() else BACKEND_ROOT / p
         return BACKEND_ROOT.parent / "sample_assets"
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() == "production"
+
+    @property
+    def smtp_configured(self) -> bool:
+        return bool(self.smtp_host.strip())
 
     @property
     def llm_configured(self) -> bool:

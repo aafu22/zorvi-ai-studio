@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+# Local HTTPS certificates (made with mkcert; never commit private keys)
+certs/
+*.pem
+*.key
 
 # Python
 .venv/

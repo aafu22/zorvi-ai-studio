@@ -1,0 +1,886 @@
+diff --git a/README.md b/README.md
+index 15674bf..d387078 100644
+--- a/README.md
++++ b/README.md
+@@ -105,6 +105,17 @@ npm run build
+ 7. Test **AI Marketing Brain** separately with a valid key. Confirm the backend is calling Gemini and the returned text is model-generated. Test missing-key and provider-error messages too.
+ 8. Refresh the browser and reopen saved products/projects.
+ 
++## Accounts: sign up and sign in
++
++The app has a **Sign in** / **Create account** option in the sidebar (pages `/login` and `/signup`).
++
++- Accounts are stored in the backend SQLite database (`backend/storage/zorvi.db`). Passwords are hashed with scrypt; the plain password is never stored.
++- A successful sign-in returns a session token (valid 30 days) that the browser keeps in `localStorage`. Signing out deletes it on the server too.
++- After 8 wrong passwords for one email the backend pauses sign-in for that email for 15 minutes (resets if the backend restarts).
++- API: `POST /api/auth/signup`, `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/logout` (token sent as `Authorization: Bearer <token>`). To require sign-in on any backend route, add `user: UserOut = Depends(get_current_user)` (from `app.api.auth`).
++- Existing features still work without signing in; sign-in is currently optional and does not yet separate one user's saved data from another's.
++- No password reset or email verification is included, and there is no HTTPS in local development. Add both before deploying publicly.
++
+ ## Storage, privacy and limitations
+ 
+ - Photo Assistant product records, image blobs and analysis are saved in **IndexedDB in the current browser on the current device**. They are not synced across browsers/devices and may be deleted if site data is cleared.
+diff --git a/backend/app/api/auth.py b/backend/app/api/auth.py
+new file mode 100644
+index 0000000..de10170
+--- /dev/null
++++ b/backend/app/api/auth.py
+@@ -0,0 +1,50 @@
++from fastapi import APIRouter, Header, Response
++
++from app.core.errors import AppError
++from app.schemas.auth import AuthResponse, LoginRequest, SignupRequest, UserOut
++from app.services import auth_service
++
++router = APIRouter(prefix="/auth", tags=["auth"])
++
++
++def _bearer_token(authorization: str | None) -> str | None:
++    if not authorization:
++        return None
++    scheme, _, token = authorization.partition(" ")
++    return token.strip() if scheme.lower() == "bearer" and token.strip() else None
++
++
++def get_current_user(authorization: str | None = Header(default=None)) -> UserOut:
++    """Dependency for routes that need a signed-in user:
++
++        @router.get("/x")
++        def x(user: UserOut = Depends(get_current_user)): ...
++    """
++    token = _bearer_token(authorization)
++    user = auth_service.user_for_token(token) if token else None
++    if user is None:
++        raise AppError(401, "Please sign in to continue.")
++    return user
++
++
++@router.post("/signup", response_model=AuthResponse, status_code=201)
++def signup(request: SignupRequest) -> AuthResponse:
++    return auth_service.signup(request)
++
++
++@router.post("/login", response_model=AuthResponse)
++def login(request: LoginRequest) -> AuthResponse:
++    return auth_service.login(request)
++
++
++@router.get("/me", response_model=UserOut)
++def me(authorization: str | None = Header(default=None)) -> UserOut:
++    return get_current_user(authorization)
++
++
++@router.post("/logout", status_code=204)
++def logout(authorization: str | None = Header(default=None)) -> Response:
++    token = _bearer_token(authorization)
++    if token:
++        auth_service.logout(token)
++    return Response(status_code=204)
+diff --git a/backend/app/database/db.py b/backend/app/database/db.py
+index d294706..240c68e 100644
+--- a/backend/app/database/db.py
++++ b/backend/app/database/db.py
+@@ -32,6 +32,21 @@ CREATE TABLE IF NOT EXISTS campaigns (
+     state        TEXT NOT NULL,                        -- JSON: details, copy, graphic settings...
+     created_at   TEXT NOT NULL
+ );
++
++CREATE TABLE IF NOT EXISTS users (
++    id            INTEGER PRIMARY KEY AUTOINCREMENT,
++    name          TEXT NOT NULL,
++    email         TEXT NOT NULL UNIQUE,                -- stored lower-case
++    password_hash TEXT NOT NULL,                       -- scrypt, never the plain password
++    created_at    TEXT NOT NULL
++);
++
++CREATE TABLE IF NOT EXISTS sessions (
++    token_hash TEXT PRIMARY KEY,                       -- SHA-256 of the token; the token itself is never stored
++    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++    created_at TEXT NOT NULL,
++    expires_at TEXT NOT NULL
++);
+ """
+ 
+ 
+diff --git a/backend/app/main.py b/backend/app/main.py
+index 36a3c67..6dbaac7 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
+ from fastapi.middleware.cors import CORSMiddleware
+ from fastapi.responses import JSONResponse
+ 
+-from app.api import brand, copy, demo, export, graphics, health, history, images, marketing, photo_assistant
++from app.api import auth, brand, copy, demo, export, graphics, health, history, images, marketing, photo_assistant
+ from app.core.config import get_settings
+ from app.core.errors import AppError
+ from app.services.storage_service import get_storage
+@@ -47,6 +47,7 @@ async def app_error_handler(_: Request, exc: AppError) -> JSONResponse:
+ 
+ 
+ app.include_router(health.router, prefix="/api")
++app.include_router(auth.router, prefix="/api")
+ app.include_router(images.router, prefix="/api")
+ app.include_router(copy.router, prefix="/api")
+ app.include_router(graphics.router, prefix="/api")
+diff --git a/backend/app/schemas/auth.py b/backend/app/schemas/auth.py
+new file mode 100644
+index 0000000..80ed402
+--- /dev/null
++++ b/backend/app/schemas/auth.py
+@@ -0,0 +1,23 @@
++from pydantic import BaseModel, Field
++
++
++class SignupRequest(BaseModel):
++    name: str = Field(min_length=1, max_length=80)
++    email: str = Field(min_length=3, max_length=254)
++    password: str = Field(min_length=8, max_length=128)
++
++
++class LoginRequest(BaseModel):
++    email: str = Field(min_length=3, max_length=254)
++    password: str = Field(min_length=1, max_length=128)
++
++
++class UserOut(BaseModel):
++    id: int
++    name: str
++    email: str
++
++
++class AuthResponse(BaseModel):
++    token: str
++    user: UserOut
+diff --git a/backend/app/services/auth_service.py b/backend/app/services/auth_service.py
+new file mode 100644
+index 0000000..8e0f98f
+--- /dev/null
++++ b/backend/app/services/auth_service.py
+@@ -0,0 +1,158 @@
++"""Accounts and login sessions (standard library only: no extra packages needed).
++
++- Passwords are hashed with scrypt and a random per-user salt. The plain password is never stored.
++- A successful sign-up / login returns a random session token. Only its SHA-256 hash is stored,
++  so a leaked database file does not reveal usable tokens.
++- Failed logins are throttled in memory per email address (resets when the server restarts).
++"""
++
++import base64
++import hashlib
++import hmac
++import re
++import secrets
++import time
++from datetime import datetime, timedelta, timezone
++
++from app.core.errors import AppError
++from app.database.db import connect
++from app.schemas.auth import AuthResponse, LoginRequest, SignupRequest, UserOut
++
++SESSION_DAYS = 30
++_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**14, 8, 1
++_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
++
++# Brute-force protection: after MAX_FAILURES wrong passwords, wait out the lock window.
++MAX_FAILURES = 8
++LOCK_SECONDS = 15 * 60
++_failures: dict[str, list[float]] = {}
++
++
++def _now() -> datetime:
++    return datetime.now(timezone.utc)
++
++
++def _b64(data: bytes) -> str:
++    return base64.b64encode(data).decode("ascii")
++
++
++def hash_password(password: str) -> str:
++    salt = secrets.token_bytes(16)
++    digest = hashlib.scrypt(
++        password.encode("utf-8"), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32
++    )
++    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${_b64(salt)}${_b64(digest)}"
++
++
++def verify_password(password: str, stored: str) -> bool:
++    try:
++        scheme, n, r, p, salt_b64, hash_b64 = stored.split("$")
++        if scheme != "scrypt":
++            return False
++        expected = base64.b64decode(hash_b64)
++        digest = hashlib.scrypt(
++            password.encode("utf-8"),
++            salt=base64.b64decode(salt_b64),
++            n=int(n),
++            r=int(r),
++            p=int(p),
++            dklen=len(expected),
++        )
++    except (ValueError, TypeError):
++        return False
++    return hmac.compare_digest(digest, expected)
++
++
++# A real hash to compare against when the email is unknown, so "no such user" and
++# "wrong password" take about the same time and look the same to the caller.
++_DUMMY_HASH = hash_password("not-a-real-password")
++
++
++def _token_hash(token: str) -> str:
++    return hashlib.sha256(token.encode("utf-8")).hexdigest()
++
++
++def _normalise_email(email: str) -> str:
++    email = email.strip().lower()
++    if not _EMAIL_RE.match(email):
++        raise AppError(422, "Please enter a valid email address.")
++    return email
++
++
++def _issue_session(conn, user_id: int) -> str:
++    token = secrets.token_urlsafe(32)
++    now = _now()
++    conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now.isoformat(),))
++    conn.execute(
++        "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
++        (
++            _token_hash(token),
++            user_id,
++            now.isoformat(),
++            (now + timedelta(days=SESSION_DAYS)).isoformat(),
++        ),
++    )
++    return token
++
++
++def signup(req: SignupRequest) -> AuthResponse:
++    name = req.name.strip()
++    if not name:
++        raise AppError(422, "Please enter your name.")
++    email = _normalise_email(req.email)
++    with connect() as conn:
++        if conn.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone():
++            raise AppError(409, "An account with this email already exists. Try signing in.")
++        cur = conn.execute(
++            "INSERT INTO users (name, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
++            (name, email, hash_password(req.password), _now().isoformat()),
++        )
++        user_id = cur.lastrowid
++        token = _issue_session(conn, user_id)
++    return AuthResponse(token=token, user=UserOut(id=user_id, name=name, email=email))
++
++
++def _check_not_locked(email: str) -> None:
++    cutoff = time.time() - LOCK_SECONDS
++    recent = [t for t in _failures.get(email, []) if t > cutoff]
++    _failures[email] = recent
++    if len(recent) >= MAX_FAILURES:
++        raise AppError(429, "Too many failed attempts. Please wait a few minutes and try again.")
++
++
++def login(req: LoginRequest) -> AuthResponse:
++    email = req.email.strip().lower()
++    _check_not_locked(email)
++    with connect() as conn:
++        row = conn.execute(
++            "SELECT id, name, email, password_hash FROM users WHERE email = ?", (email,)
++        ).fetchone()
++        ok = verify_password(req.password, row["password_hash"] if row else _DUMMY_HASH)
++        if not row or not ok:
++            _failures.setdefault(email, []).append(time.time())
++            raise AppError(401, "Incorrect email or password.")
++        _failures.pop(email, None)
++        token = _issue_session(conn, row["id"])
++    return AuthResponse(
++        token=token, user=UserOut(id=row["id"], name=row["name"], email=row["email"])
++    )
++
++
++def user_for_token(token: str) -> UserOut | None:
++    with connect() as conn:
++        row = conn.execute(
++            """
++            SELECT u.id, u.name, u.email, s.expires_at
++            FROM sessions s JOIN users u ON u.id = s.user_id
++            WHERE s.token_hash = ?
++            """,
++            (_token_hash(token),),
++        ).fetchone()
++    if not row or datetime.fromisoformat(row["expires_at"]) < _now():
++        return None
++    return UserOut(id=row["id"], name=row["name"], email=row["email"])
++
++
++def logout(token: str) -> None:
++    with connect() as conn:
++        conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
+diff --git a/backend/tests/test_auth_api.py b/backend/tests/test_auth_api.py
+new file mode 100644
+index 0000000..d12e313
+--- /dev/null
++++ b/backend/tests/test_auth_api.py
+@@ -0,0 +1,82 @@
++import pytest
++
++from app.services import auth_service
++
++SIGNUP = {"name": "Asha", "email": "Asha@Example.com", "password": "correct horse"}
++
++
++@pytest.fixture(autouse=True)
++def _reset_throttle():
++    auth_service._failures.clear()
++    yield
++    auth_service._failures.clear()
++
++
++def _auth(token):
++    return {"Authorization": f"Bearer {token}"}
++
++
++def test_signup_then_me(client):
++    r = client.post("/api/auth/signup", json=SIGNUP)
++    assert r.status_code == 201
++    body = r.json()
++    assert body["user"]["email"] == "asha@example.com"  # normalised to lower-case
++    assert "password" not in str(body)
++
++    me = client.get("/api/auth/me", headers=_auth(body["token"]))
++    assert me.status_code == 200
++    assert me.json()["name"] == "Asha"
++
++
++def test_signup_duplicate_email_rejected(client):
++    assert client.post("/api/auth/signup", json=SIGNUP).status_code == 201
++    r = client.post("/api/auth/signup", json={**SIGNUP, "email": "asha@example.com"})
++    assert r.status_code == 409
++
++
++def test_signup_validation(client):
++    assert client.post("/api/auth/signup", json={**SIGNUP, "password": "short"}).status_code == 422
++    assert client.post("/api/auth/signup", json={**SIGNUP, "email": "not-an-email"}).status_code == 422
++    assert client.post("/api/auth/signup", json={**SIGNUP, "name": "   "}).status_code == 422
++
++
++def test_login_success_and_failure(client):
++    client.post("/api/auth/signup", json=SIGNUP)
++    ok = client.post("/api/auth/login", json={"email": "ASHA@example.com", "password": SIGNUP["password"]})
++    assert ok.status_code == 200
++    assert ok.json()["token"]
++
++    bad = client.post("/api/auth/login", json={"email": "asha@example.com", "password": "wrong password"})
++    assert bad.status_code == 401
++    unknown = client.post("/api/auth/login", json={"email": "nobody@example.com", "password": "whatever1"})
++    assert unknown.status_code == 401
++    assert bad.json()["detail"] == unknown.json()["detail"]  # does not reveal which emails exist
++
++
++def test_me_requires_valid_token(client):
++    assert client.get("/api/auth/me").status_code == 401
++    assert client.get("/api/auth/me", headers=_auth("garbage")).status_code == 401
++
++
++def test_logout_invalidates_token(client):
++    token = client.post("/api/auth/signup", json=SIGNUP).json()["token"]
++    assert client.post("/api/auth/logout", headers=_auth(token)).status_code == 204
++    assert client.get("/api/auth/me", headers=_auth(token)).status_code == 401
++
++
++def test_password_is_hashed_in_database(client):
++    from app.database.db import connect
++
++    client.post("/api/auth/signup", json=SIGNUP)
++    with connect() as conn:
++        stored = conn.execute("SELECT password_hash FROM users").fetchone()["password_hash"]
++    assert SIGNUP["password"] not in stored
++    assert stored.startswith("scrypt$")
++
++
++def test_too_many_failed_logins_are_throttled(client):
++    client.post("/api/auth/signup", json=SIGNUP)
++    for _ in range(auth_service.MAX_FAILURES):
++        client.post("/api/auth/login", json={"email": "asha@example.com", "password": "nope nope"})
++    locked = client.post("/api/auth/login", json={"email": "asha@example.com", "password": SIGNUP["password"]})
++    assert locked.status_code == 429
+diff --git a/frontend/src/app/layout.tsx b/frontend/src/app/layout.tsx
+index 41b7722..5f03431 100644
+--- a/frontend/src/app/layout.tsx
++++ b/frontend/src/app/layout.tsx
+@@ -2,6 +2,7 @@ import type { Metadata } from "next";
+ import type { ReactNode } from "react";
+ 
+ import { AppShell } from "@/components/AppShell";
++import { AuthProvider } from "@/lib/auth";
+ import "./globals.css";
+ 
+ export const metadata: Metadata = {
+@@ -14,7 +15,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
+   return (
+     <html lang="en">
+       <body>
+-        <AppShell>{children}</AppShell>
++        <AuthProvider>
++          <AppShell>{children}</AppShell>
++        </AuthProvider>
+       </body>
+     </html>
+   );
+diff --git a/frontend/src/app/login/page.tsx b/frontend/src/app/login/page.tsx
+new file mode 100644
+index 0000000..18f4896
+--- /dev/null
++++ b/frontend/src/app/login/page.tsx
+@@ -0,0 +1,5 @@
++import { AuthForm } from "@/components/AuthForm";
++
++export default function LoginPage() {
++  return <AuthForm mode="login" />;
++}
+diff --git a/frontend/src/app/signup/page.tsx b/frontend/src/app/signup/page.tsx
+new file mode 100644
+index 0000000..5cf27a9
+--- /dev/null
++++ b/frontend/src/app/signup/page.tsx
+@@ -0,0 +1,5 @@
++import { AuthForm } from "@/components/AuthForm";
++
++export default function SignupPage() {
++  return <AuthForm mode="signup" />;
++}
+diff --git a/frontend/src/components/AppShell.tsx b/frontend/src/components/AppShell.tsx
+index e094419..d773838 100644
+--- a/frontend/src/components/AppShell.tsx
++++ b/frontend/src/components/AppShell.tsx
+@@ -1,12 +1,15 @@
+ "use client";
+ 
+ import { Menu, X } from "lucide-react";
++import { usePathname } from "next/navigation";
+ import { useEffect, useState, type ReactNode } from "react";
+ 
+ import { Sidebar } from "./Sidebar";
+ 
+ export function AppShell({ children }: { children: ReactNode }) {
+   const [open, setOpen] = useState(false);
++  const pathname = usePathname();
++  const isAuthPage = pathname === "/login" || pathname === "/signup";
+ 
+   // Close the mobile drawer with Escape
+   useEffect(() => {
+@@ -16,6 +19,9 @@ export function AppShell({ children }: { children: ReactNode }) {
+     return () => window.removeEventListener("keydown", onKey);
+   }, [open]);
+ 
++  // Sign in / sign up pages use the full screen without the sidebar.
++  if (isAuthPage) return <>{children}</>;
++
+   return (
+     <div className="min-h-screen lg:flex">
+       {/* Desktop sidebar */}
+diff --git a/frontend/src/components/AuthForm.tsx b/frontend/src/components/AuthForm.tsx
+new file mode 100644
+index 0000000..33c2746
+--- /dev/null
++++ b/frontend/src/components/AuthForm.tsx
+@@ -0,0 +1,155 @@
++"use client";
++
++import { Loader2, Sparkles } from "lucide-react";
++import Link from "next/link";
++import { useRouter } from "next/navigation";
++import { useEffect, useState, type FormEvent } from "react";
++
++import { useAuth } from "@/lib/auth";
++
++const inputClass =
++  "mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400";
++
++export function AuthForm({ mode }: { mode: "login" | "signup" }) {
++  const isSignup = mode === "signup";
++  const router = useRouter();
++  const { user, loading, login, signup } = useAuth();
++
++  const [name, setName] = useState("");
++  const [email, setEmail] = useState("");
++  const [password, setPassword] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  // Already signed in? Go to the dashboard.
++  useEffect(() => {
++    if (!loading && user) router.replace("/");
++  }, [loading, user, router]);
++
++  const onSubmit = async (e: FormEvent) => {
++    e.preventDefault();
++    setError(null);
++    if (isSignup && password.length < 8) {
++      setError("Password must be at least 8 characters.");
++      return;
++    }
++    setBusy(true);
++    try {
++      if (isSignup) await signup(name.trim(), email.trim(), password);
++      else await login(email.trim(), password);
++      router.replace("/");
++    } catch (err) {
++      setError(err instanceof Error ? err.message : "Something went wrong.");
++      setBusy(false);
++    }
++  };
++
++  return (
++    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-12">
++      <div className="w-full max-w-md">
++        <div className="mb-6 flex items-center justify-center gap-2">
++          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-600 text-white">
++            <Sparkles className="h-5 w-5" aria-hidden="true" />
++          </span>
++          <span className="text-xl font-semibold tracking-tight text-navy-900">
++            Zorvi <span className="text-brand-600">AI</span>
++          </span>
++        </div>
++
++        <div className="rounded-2xl bg-white p-6 shadow-card sm:p-8">
++          <h1 className="text-xl font-bold text-slate-900">
++            {isSignup ? "Create your account" : "Welcome back"}
++          </h1>
++          <p className="mt-1 text-sm text-slate-600">
++            {isSignup
++              ? "Sign up to start creating marketing content."
++              : "Sign in to continue to Zorvi AI Studio."}
++          </p>
++
++          <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>
++            {isSignup && (
++              <div>
++                <label htmlFor="name" className="text-sm font-medium text-slate-700">
++                  Name
++                </label>
++                <input
++                  id="name"
++                  type="text"
++                  autoComplete="name"
++                  required
++                  maxLength={80}
++                  value={name}
++                  onChange={(e) => setName(e.target.value)}
++                  className={inputClass}
++                  placeholder="Your name"
++                />
++              </div>
++            )}
++            <div>
++              <label htmlFor="email" className="text-sm font-medium text-slate-700">
++                Email
++              </label>
++              <input
++                id="email"
++                type="email"
++                autoComplete="email"
++                required
++                value={email}
++                onChange={(e) => setEmail(e.target.value)}
++                className={inputClass}
++                placeholder="you@example.com"
++              />
++            </div>
++            <div>
++              <label htmlFor="password" className="text-sm font-medium text-slate-700">
++                Password
++              </label>
++              <input
++                id="password"
++                type="password"
++                autoComplete={isSignup ? "new-password" : "current-password"}
++                required
++                minLength={isSignup ? 8 : undefined}
++                value={password}
++                onChange={(e) => setPassword(e.target.value)}
++                className={inputClass}
++                placeholder={isSignup ? "At least 8 characters" : "Your password"}
++              />
++            </div>
++
++            {error && (
++              <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
++                {error}
++              </p>
++            )}
++
++            <button
++              type="submit"
++              disabled={busy || !email || !password || (isSignup && !name.trim())}
++              className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
++            >
++              {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
++              {isSignup ? "Create account" : "Sign in"}
++            </button>
++          </form>
++
++          <p className="mt-6 text-center text-sm text-slate-600">
++            {isSignup ? "Already have an account?" : "New to Zorvi?"}{" "}
++            <Link
++              href={isSignup ? "/login" : "/signup"}
++              className="font-semibold text-brand-600 hover:text-brand-700"
++            >
++              {isSignup ? "Sign in" : "Create an account"}
++            </Link>
++          </p>
++        </div>
++
++        <p className="mt-4 text-center text-sm">
++          <Link href="/" className="text-slate-500 hover:text-slate-700">
++            Continue without signing in
++          </Link>
++        </p>
++      </div>
++    </div>
++  );
++}
+diff --git a/frontend/src/components/Sidebar.tsx b/frontend/src/components/Sidebar.tsx
+index 0ebd53e..73bbd7b 100644
+--- a/frontend/src/components/Sidebar.tsx
++++ b/frontend/src/components/Sidebar.tsx
+@@ -1,13 +1,15 @@
+ "use client";
+ 
+-import { Sparkles } from "lucide-react";
++import { LogIn, LogOut, Sparkles, UserPlus } from "lucide-react";
+ import Link from "next/link";
+ import { usePathname } from "next/navigation";
+ 
++import { useAuth } from "@/lib/auth";
+ import { NAV_ITEMS } from "@/lib/nav";
+ 
+ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+   const pathname = usePathname();
++  const { user, loading, logout } = useAuth();
+ 
+   return (
+     <div className="flex h-full flex-col bg-navy-900 text-slate-200">
+@@ -43,6 +45,45 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+         })}
+       </nav>
+ 
++      <div className="border-t border-navy-700 px-3 py-4">
++        {loading ? null : user ? (
++          <div className="space-y-2">
++            <div className="px-3">
++              <p className="truncate text-sm font-medium text-white">{user.name}</p>
++              <p className="truncate text-xs text-slate-400">{user.email}</p>
++            </div>
++            <button
++              onClick={() => {
++                onNavigate?.();
++                void logout();
++              }}
++              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-300 transition-colors hover:bg-navy-800 hover:text-white"
++            >
++              <LogOut className="h-4 w-4" aria-hidden="true" />
++              Sign out
++            </button>
++          </div>
++        ) : (
++          <div className="space-y-1">
++            <Link
++              href="/login"
++              onClick={onNavigate}
++              className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-300 transition-colors hover:bg-navy-800 hover:text-white"
++            >
++              <LogIn className="h-4 w-4" aria-hidden="true" />
++              Sign in
++            </Link>
++            <Link
++              href="/signup"
++              onClick={onNavigate}
++              className="flex items-center gap-3 rounded-lg bg-brand-600 px-3 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
++            >
++              <UserPlus className="h-4 w-4" aria-hidden="true" />
++              Create account
++            </Link>
++          </div>
++        )}
++      </div>
+     </div>
+   );
+ }
+diff --git a/frontend/src/lib/api.ts b/frontend/src/lib/api.ts
+index 9e439b1..a8d342c 100644
+--- a/frontend/src/lib/api.ts
++++ b/frontend/src/lib/api.ts
+@@ -1,4 +1,6 @@
+ import type {
++  AuthResponse,
++  AuthUser,
+   BrandKit,
+   BrandKitInput,
+   CampaignSummary,
+@@ -196,3 +198,29 @@ export const generateMarketingTemplate = (body: MarketingRequestBody) =>
+     headers: JSON_HEADERS,
+     body: JSON.stringify(body),
+   });
++
++/* ------------------------------------------------------------------ auth */
++
++export const apiSignup = (body: { name: string; email: string; password: string }) =>
++  apiFetch<AuthResponse>("/api/auth/signup", {
++    method: "POST",
++    headers: JSON_HEADERS,
++    body: JSON.stringify(body),
++  });
++
++export const apiLogin = (body: { email: string; password: string }) =>
++  apiFetch<AuthResponse>("/api/auth/login", {
++    method: "POST",
++    headers: JSON_HEADERS,
++    body: JSON.stringify(body),
++  });
++
++export const apiMe = (token: string) =>
++  apiFetch<AuthUser>("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } });
++
++export async function apiLogout(token: string): Promise<void> {
++  await request("/api/auth/logout", {
++    method: "POST",
++    headers: { Authorization: `Bearer ${token}` },
++  });
++}
+diff --git a/frontend/src/lib/auth.tsx b/frontend/src/lib/auth.tsx
+new file mode 100644
+index 0000000..42a705a
+--- /dev/null
++++ b/frontend/src/lib/auth.tsx
+@@ -0,0 +1,109 @@
++"use client";
++
++import {
++  createContext,
++  useCallback,
++  useContext,
++  useEffect,
++  useMemo,
++  useState,
++  type ReactNode,
++} from "react";
++
++import { ApiError, apiLogin, apiLogout, apiMe, apiSignup } from "@/lib/api";
++import type { AuthResponse, AuthUser } from "@/types/api";
++
++const TOKEN_KEY = "zorvi_auth_token";
++
++interface AuthContextValue {
++  user: AuthUser | null;
++  /** True until the saved session (if any) has been checked once on page load. */
++  loading: boolean;
++  login: (email: string, password: string) => Promise<void>;
++  signup: (name: string, email: string, password: string) => Promise<void>;
++  logout: () => Promise<void>;
++  /** The current session token, for calling protected backend routes. */
++  getToken: () => string | null;
++}
++
++const AuthContext = createContext<AuthContextValue | null>(null);
++
++function readToken(): string | null {
++  try {
++    return window.localStorage.getItem(TOKEN_KEY);
++  } catch {
++    return null;
++  }
++}
++
++function writeToken(token: string | null) {
++  try {
++    if (token) window.localStorage.setItem(TOKEN_KEY, token);
++    else window.localStorage.removeItem(TOKEN_KEY);
++  } catch {
++    /* storage blocked: the user simply stays signed in for this tab only */
++  }
++}
++
++export function AuthProvider({ children }: { children: ReactNode }) {
++  const [user, setUser] = useState<AuthUser | null>(null);
++  const [loading, setLoading] = useState(true);
++
++  // Restore the session on first load.
++  useEffect(() => {
++    const token = readToken();
++    if (!token) {
++      setLoading(false);
++      return;
++    }
++    apiMe(token)
++      .then(setUser)
++      .catch((e) => {
++        // Only discard the token if the server says it is invalid, not when the backend is merely offline.
++        if (e instanceof ApiError && e.status === 401) writeToken(null);
++      })
++      .finally(() => setLoading(false));
++  }, []);
++
++  const accept = useCallback((res: AuthResponse) => {
++    writeToken(res.token);
++    setUser(res.user);
++  }, []);
++
++  const login = useCallback(
++    async (email: string, password: string) => accept(await apiLogin({ email, password })),
++    [accept],
++  );
++
++  const signup = useCallback(
++    async (name: string, email: string, password: string) =>
++      accept(await apiSignup({ name, email, password })),
++    [accept],
++  );
++
++  const logout = useCallback(async () => {
++    const token = readToken();
++    writeToken(null);
++    setUser(null);
++    if (token) {
++      try {
++        await apiLogout(token);
++      } catch {
++        /* already signed out locally; the server session expires on its own */
++      }
++    }
++  }, []);
++
++  const value = useMemo(
++    () => ({ user, loading, login, signup, logout, getToken: readToken }),
++    [user, loading, login, signup, logout],
++  );
++
++  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
++}
++
++export function useAuth(): AuthContextValue {
++  const ctx = useContext(AuthContext);
++  if (!ctx) throw new Error("useAuth must be used inside <AuthProvider>.");
++  return ctx;
++}
+diff --git a/frontend/src/types/api.ts b/frontend/src/types/api.ts
+index 9993412..b6b678e 100644
+--- a/frontend/src/types/api.ts
++++ b/frontend/src/types/api.ts
+@@ -227,3 +227,16 @@ export interface MarketingResponse {
+   content: MarketingContent;
+   warnings: string[];
+ }
++
++/* ------------------------------------------------------------------ auth */
++
++export interface AuthUser {
++  id: number;
++  name: string;
++  email: string;
++}
++
++export interface AuthResponse {
++  token: string;
++  user: AuthUser;
++}

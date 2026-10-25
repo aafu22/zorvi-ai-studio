@@ -1,13 +1,15 @@
 "use client";
 
-import { Sparkles } from "lucide-react";
+import { LogIn, LogOut, Sparkles, UserPlus } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { useAuth } from "@/lib/auth";
 import { NAV_ITEMS } from "@/lib/nav";
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const { user, loading, logout } = useAuth();
 
   return (
     <div className="flex h-full flex-col bg-navy-900 text-slate-200">
@@ -43,6 +45,45 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         })}
       </nav>
 
+      <div className="border-t border-navy-700 px-3 py-4">
+        {loading ? null : user ? (
+          <div className="space-y-2">
+            <div className="px-3">
+              <p className="truncate text-sm font-medium text-white">{user.name}</p>
+              <p className="truncate text-xs text-slate-400">{user.email}</p>
+            </div>
+            <button
+              onClick={() => {
+                onNavigate?.();
+                void logout();
+              }}
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-300 transition-colors hover:bg-navy-800 hover:text-white"
+            >
+              <LogOut className="h-4 w-4" aria-hidden="true" />
+              Sign out
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <Link
+              href="/login"
+              onClick={onNavigate}
+              className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-300 transition-colors hover:bg-navy-800 hover:text-white"
+            >
+              <LogIn className="h-4 w-4" aria-hidden="true" />
+              Sign in
+            </Link>
+            <Link
+              href="/signup"
+              onClick={onNavigate}
+              className="flex items-center gap-3 rounded-lg bg-brand-600 px-3 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
+            >
+              <UserPlus className="h-4 w-4" aria-hidden="true" />
+              Create account
+            </Link>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

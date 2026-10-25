@@ -1,12 +1,18 @@
 "use client";
 
 import { Menu, X } from "lucide-react";
+import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Sidebar } from "./Sidebar";
 
+/** Pages shown full-screen, without the sidebar. */
+const AUTH_PATHS = ["/login", "/signup", "/forgot-password", "/reset-password", "/verify-email"];
+
 export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+  const isAuthPage = AUTH_PATHS.includes(pathname);
 
   // Close the mobile drawer with Escape
   useEffect(() => {
@@ -15,6 +21,9 @@ export function AppShell({ children }: { children: ReactNode }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
+
+  // Sign in / sign up pages use the full screen without the sidebar.
+  if (isAuthPage) return <>{children}</>;
 
   return (
     <div className="min-h-screen lg:flex">

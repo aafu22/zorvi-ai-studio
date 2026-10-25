@@ -1,0 +1,1893 @@
+diff --git a/.gitignore b/.gitignore
+index 7776218..9b79134 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -2,6 +2,10 @@
+ .env
+ .env.*
+ !.env.example
++# Local HTTPS certificates (made with mkcert; never commit private keys)
++certs/
++*.pem
++*.key
+ 
+ # Python
+ .venv/
+diff --git a/README.md b/README.md
+index d387078..334f70f 100644
+--- a/README.md
++++ b/README.md
+@@ -105,16 +105,68 @@ npm run build
+ 7. Test **AI Marketing Brain** separately with a valid key. Confirm the backend is calling Gemini and the returned text is model-generated. Test missing-key and provider-error messages too.
+ 8. Refresh the browser and reopen saved products/projects.
+ 
+-## Accounts: sign up and sign in
++## Accounts: sign up, sign in, email verification, password reset
+ 
+-The app has a **Sign in** / **Create account** option in the sidebar (pages `/login` and `/signup`).
++The sidebar has **Sign in** / **Create account**. Pages: `/signup`, `/login`, `/verify-email`, `/forgot-password`, `/reset-password`.
+ 
+-- Accounts are stored in the backend SQLite database (`backend/storage/zorvi.db`). Passwords are hashed with scrypt; the plain password is never stored.
+-- A successful sign-in returns a session token (valid 30 days) that the browser keeps in `localStorage`. Signing out deletes it on the server too.
+-- After 8 wrong passwords for one email the backend pauses sign-in for that email for 15 minutes (resets if the backend restarts).
+-- API: `POST /api/auth/signup`, `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/logout` (token sent as `Authorization: Bearer <token>`). To require sign-in on any backend route, add `user: UserOut = Depends(get_current_user)` (from `app.api.auth`).
+-- Existing features still work without signing in; sign-in is currently optional and does not yet separate one user's saved data from another's.
+-- No password reset or email verification is included, and there is no HTTPS in local development. Add both before deploying publicly.
++- Accounts live in the backend SQLite database (`backend/storage/zorvi.db`). Passwords are hashed with scrypt; the plain password is never stored. An older database is upgraded automatically, and accounts that existed before verification was added count as verified.
++- **Email verification:** a new account gets an email with a link (valid 24 hours, single use) and cannot sign in until it is clicked. Turn this off with `REQUIRE_EMAIL_VERIFICATION=false` in `backend/.env`.
++- **Password reset:** "Forgot password?" on the sign-in page emails a link (valid 60 minutes, single use). Resetting signs the account out everywhere. The "forgot password" and "resend verification" answers are identical whether or not the email has an account, and are limited to 3 emails per address per 15 minutes.
++- **Sessions:** a successful sign-in returns a token (valid 30 days) kept in the browser's `localStorage`; signing out deletes it on the server too. After 8 wrong passwords for one email, sign-in pauses for 15 minutes (resets when the backend restarts).
++- API: `POST /api/auth/signup`, `login`, `logout`, `verify-email`, `resend-verification`, `forgot-password`, `reset-password`, and `GET /api/auth/me` (token sent as `Authorization: Bearer <token>`). To require sign-in on a backend route, add `user: UserOut = Depends(get_current_user)` (from `app.api.auth`).
++- Existing features still work without signing in; sign-in is optional and does not yet separate one user's saved data from another's.
++
++### Email while developing (no mail account needed)
++
++Leave `SMTP_HOST` empty in `backend/.env`. Instead of sending, the backend **prints each email, including its link, in the backend terminal** (between `===== DEV EMAIL` lines). Copy the link into your browser to verify an account or reset a password.
++
++### Sending real emails
++
++Fill in the SMTP settings in `backend/.env` (see `.env.example`) and restart the backend. For Gmail, turn on 2-step verification, create an *App password* at https://myaccount.google.com/apppasswords, and use `smtp.gmail.com`, port `587`, your Gmail address as `SMTP_USERNAME` and the app password as `SMTP_PASSWORD`. Set `FRONTEND_URL` to the address people use to open the site, because that is what the email links point to. Mail failures are logged in the backend terminal and never break the page.
++
++## HTTPS
++
++Browsers only allow secure behaviour (and people should only type passwords) over HTTPS. The app itself does not handle certificates: local development uses a locally trusted certificate, and production uses a reverse proxy or a hosting platform that provides HTTPS. What the code does: adds security headers, can redirect HTTP to HTTPS, and sends the HSTS header in production.
++
++### Local HTTPS (optional, Windows/macOS/Linux)
++
++1. Install [mkcert](https://github.com/FiloSottile/mkcert#installation) (for example `choco install mkcert` or `scoop install mkcert` on Windows), then run once: `mkcert -install`
++2. In the project root (the folder containing `backend` and `frontend`):
++   ```powershell
++   mkdir certs
++   mkcert -key-file certs/localhost-key.pem -cert-file certs/localhost.pem localhost 127.0.0.1
++   ```
++   `certs/` is git-ignored; never commit the key.
++3. `backend/.env`: set `CORS_ORIGINS=https://localhost:3000` and `FRONTEND_URL=https://localhost:3000`. Start the backend from `backend`:
++   ```powershell
++   uvicorn app.main:app --reload --port 8000 --ssl-keyfile ../certs/localhost-key.pem --ssl-certfile ../certs/localhost.pem
++   ```
++4. `frontend/.env.local`: set `NEXT_PUBLIC_API_URL=https://localhost:8000`. Start the frontend from `frontend`:
++   ```powershell
++   npm run dev:https
++   ```
++5. Open https://localhost:3000. A page served over HTTPS cannot call an `http://` backend (the browser blocks it), so the frontend and backend must both use HTTPS or both use HTTP.
++
++### Going live with HTTPS (production)
++
++Hosting platforms such as Render, Railway, Fly.io, Vercel and Netlify give you HTTPS automatically. On your own server, use the included [Caddy](https://caddyserver.com) setup, which gets and renews free certificates by itself:
++
++1. Point your domain at the server and open ports 80 and 443.
++2. `backend/.env`:
++   ```dotenv
++   APP_ENV=production
++   FORCE_HTTPS=true
++   CORS_ORIGINS=https://zorvi.example.com
++   FRONTEND_URL=https://zorvi.example.com
++   # plus the SMTP_* settings, so verification and reset emails are really sent
++   ```
++3. `frontend/.env.local`: `NEXT_PUBLIC_API_URL=https://zorvi.example.com` and `ENABLE_HSTS=true`, then `npm run build` (the API address is fixed into the build).
++4. Run the apps without `--reload`: `uvicorn app.main:app --host 127.0.0.1 --port 8000` in `backend`, and `npm start` in `frontend`.
++5. From the `deploy` folder: `APP_DOMAIN=zorvi.example.com caddy run --config Caddyfile`. The site and API then share one HTTPS address.
++
++If the proxy runs on a different machine than the backend, start uvicorn with `--forwarded-allow-ips <proxy address>` so `FORCE_HTTPS` can tell the original request was HTTPS. HSTS makes browsers refuse plain HTTP for the whole host name for a year, so enable it only on the real production domain.
++
++Still not included: two-factor sign-in, "sign out everywhere" on demand, account deletion, and per-user separation of saved projects. Review these before storing real customer data.
+ 
+ ## Storage, privacy and limitations
+ 
+diff --git a/backend/.env.example b/backend/.env.example
+index e416dab..ab224a0 100644
+--- a/backend/.env.example
++++ b/backend/.env.example
+@@ -17,3 +17,29 @@ GEMINI_MODEL=gemini-3.5-flash-lite
+ GEMINI_TIMEOUT_SECONDS=30
+ # Optional: folder containing sample-product.jpg for the demo (default: <repo>/sample_assets)
+ SAMPLE_ASSETS_DIR=
++
++# ---- Accounts: email verification and password reset ----
++# The public address of the website. Links in emails point here.
++# Local: http://localhost:3000 (or https://localhost:3000 with local HTTPS). Production: https://your-domain
++FRONTEND_URL=http://localhost:3000
++# true = new accounts must click the emailed link before they can sign in.
++REQUIRE_EMAIL_VERIFICATION=true
++VERIFICATION_TOKEN_HOURS=24
++RESET_TOKEN_MINUTES=60
++# Outgoing email (SMTP). Leave SMTP_HOST empty while developing: emails are then PRINTED in the
++# backend terminal (with the link) instead of being sent, so you can test without a mail account.
++# Example for Gmail (needs 2-step verification + an "App password", not your normal password):
++#   SMTP_HOST=smtp.gmail.com  SMTP_PORT=587  SMTP_USERNAME=you@gmail.com  SMTP_PASSWORD=<app password>
++SMTP_HOST=
++SMTP_PORT=587
++SMTP_USERNAME=
++SMTP_PASSWORD=
++# Shown as the sender, e.g. Zorvi AI Studio <you@gmail.com>. Empty = SMTP_USERNAME.
++SMTP_FROM=
++# false = STARTTLS (port 587, most providers); true = implicit TLS (port 465)
++SMTP_USE_SSL=false
++
++# ---- HTTPS ----
++# true = redirect http:// requests to https://. Turn on only when the site is really served over HTTPS
++# (behind Caddy/nginx or a hosting platform). Leave false for plain local development.
++FORCE_HTTPS=false
+diff --git a/backend/app/api/auth.py b/backend/app/api/auth.py
+index de10170..3087dff 100644
+--- a/backend/app/api/auth.py
++++ b/backend/app/api/auth.py
+@@ -1,7 +1,17 @@
+ from fastapi import APIRouter, Header, Response
+ 
+ from app.core.errors import AppError
+-from app.schemas.auth import AuthResponse, LoginRequest, SignupRequest, UserOut
++from app.schemas.auth import (
++    AuthResponse,
++    EmailRequest,
++    LoginRequest,
++    MessageResponse,
++    ResetPasswordRequest,
++    SignupRequest,
++    SignupResponse,
++    TokenRequest,
++    UserOut,
++)
+ from app.services import auth_service
+ 
+ router = APIRouter(prefix="/auth", tags=["auth"])
+@@ -27,8 +37,8 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
+     return user
+ 
+ 
+-@router.post("/signup", response_model=AuthResponse, status_code=201)
+-def signup(request: SignupRequest) -> AuthResponse:
++@router.post("/signup", response_model=SignupResponse, status_code=201)
++def signup(request: SignupRequest) -> SignupResponse:
+     return auth_service.signup(request)
+ 
+ 
+@@ -48,3 +58,23 @@ def logout(authorization: str | None = Header(default=None)) -> Response:
+     if token:
+         auth_service.logout(token)
+     return Response(status_code=204)
++
++
++@router.post("/verify-email", response_model=MessageResponse)
++def verify_email(request: TokenRequest) -> MessageResponse:
++    return MessageResponse(message=auth_service.verify_email(request.token))
++
++
++@router.post("/resend-verification", response_model=MessageResponse)
++def resend_verification(request: EmailRequest) -> MessageResponse:
++    return MessageResponse(message=auth_service.resend_verification(request.email))
++
++
++@router.post("/forgot-password", response_model=MessageResponse)
++def forgot_password(request: EmailRequest) -> MessageResponse:
++    return MessageResponse(message=auth_service.forgot_password(request.email))
++
++
++@router.post("/reset-password", response_model=MessageResponse)
++def reset_password(request: ResetPasswordRequest) -> MessageResponse:
++    return MessageResponse(message=auth_service.reset_password(request))
+diff --git a/backend/app/core/config.py b/backend/app/core/config.py
+index 6a63408..88c3bc5 100644
+--- a/backend/app/core/config.py
++++ b/backend/app/core/config.py
+@@ -29,6 +29,27 @@ class Settings(BaseSettings):
+     # Folder holding the demo product photo. Empty = <repo>/sample_assets.
+     sample_assets_dir: str = ""
+ 
++    # ---- Accounts: email verification and password reset
++    # Public address of the website. Used to build the links inside emails.
++    frontend_url: str = "http://localhost:3000"
++    # When true, a new account must click the emailed link before it can sign in.
++    require_email_verification: bool = True
++    verification_token_hours: int = Field(default=24, ge=1)
++    reset_token_minutes: int = Field(default=60, ge=5)
++    # Outgoing email (SMTP). Leave smtp_host empty in development: emails are then printed
++    # in the backend terminal instead of being sent.
++    smtp_host: str = ""
++    smtp_port: int = 587
++    smtp_username: str = ""
++    smtp_password: str = ""
++    smtp_from: str = ""  # e.g. "Zorvi AI Studio <you@example.com>"; empty = smtp_username
++    smtp_use_ssl: bool = False  # true = implicit TLS (port 465); false = STARTTLS (port 587)
++
++    # ---- HTTPS
++    # Redirect plain-HTTP requests to HTTPS. Turn on when the site is served over HTTPS
++    # (normally behind a reverse proxy such as Caddy or nginx; see deploy/Caddyfile).
++    force_https: bool = False
++
+     @property
+     def cors_origin_list(self) -> list[str]:
+         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+@@ -45,6 +66,14 @@ class Settings(BaseSettings):
+             return p if p.is_absolute() else BACKEND_ROOT / p
+         return BACKEND_ROOT.parent / "sample_assets"
+ 
++    @property
++    def is_production(self) -> bool:
++        return self.app_env.strip().lower() == "production"
++
++    @property
++    def smtp_configured(self) -> bool:
++        return bool(self.smtp_host.strip())
++
+     @property
+     def llm_configured(self) -> bool:
+         return bool(self.gemini_api_key.strip())
+diff --git a/backend/app/database/db.py b/backend/app/database/db.py
+index 240c68e..835784d 100644
+--- a/backend/app/database/db.py
++++ b/backend/app/database/db.py
+@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS users (
+     name          TEXT NOT NULL,
+     email         TEXT NOT NULL UNIQUE,                -- stored lower-case
+     password_hash TEXT NOT NULL,                       -- scrypt, never the plain password
+-    created_at    TEXT NOT NULL
++    created_at    TEXT NOT NULL,
++    email_verified INTEGER NOT NULL DEFAULT 0
+ );
+ 
+ CREATE TABLE IF NOT EXISTS sessions (
+@@ -47,9 +48,27 @@ CREATE TABLE IF NOT EXISTS sessions (
+     created_at TEXT NOT NULL,
+     expires_at TEXT NOT NULL
+ );
++
++CREATE TABLE IF NOT EXISTS email_tokens (
++    token_hash TEXT PRIMARY KEY,                       -- SHA-256 of the emailed token
++    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++    purpose    TEXT NOT NULL,                          -- 'verify' or 'reset'
++    created_at TEXT NOT NULL,
++    expires_at TEXT NOT NULL
++);
+ """
+ 
+ 
++def _migrate(conn: sqlite3.Connection) -> None:
++    """Upgrade databases created by an earlier version (CREATE TABLE IF NOT EXISTS never alters tables)."""
++    columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
++    if "email_verified" not in columns:
++        conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
++        # Accounts created before verification existed are treated as already verified,
++        # so nobody is locked out by upgrading.
++        conn.execute("UPDATE users SET email_verified = 1")
++
++
+ def db_path() -> Path:
+     folder = get_settings().storage_path
+     folder.mkdir(parents=True, exist_ok=True)
+@@ -63,6 +82,7 @@ def connect() -> Iterator[sqlite3.Connection]:
+     conn.row_factory = sqlite3.Row
+     try:
+         conn.executescript(SCHEMA)
++        _migrate(conn)
+         yield conn
+         conn.commit()
+     except Exception:
+diff --git a/backend/app/main.py b/backend/app/main.py
+index 6dbaac7..5382bc0 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
+ 
+ from fastapi import FastAPI, Request
+ from fastapi.middleware.cors import CORSMiddleware
++from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
+ from fastapi.responses import JSONResponse
+ 
+ from app.api import auth, brand, copy, demo, export, graphics, health, history, images, marketing, photo_assistant
+@@ -32,6 +33,26 @@ app = FastAPI(
+     lifespan=lifespan,
+ )
+ 
++
++@app.middleware("http")
++async def security_headers(request: Request, call_next):
++    """Basic hardening headers on every response; HSTS only in production over HTTPS."""
++    response = await call_next(request)
++    response.headers.setdefault("X-Content-Type-Options", "nosniff")
++    response.headers.setdefault("Referrer-Policy", "no-referrer")
++    if request.url.path.startswith("/api/auth"):
++        response.headers["Cache-Control"] = "no-store"  # never cache tokens or account responses
++    if settings.is_production and request.url.scheme == "https":
++        # Tells browsers to use HTTPS for this site for the next year.
++        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
++    return response
++
++
++if settings.force_https:
++    # Send plain-HTTP requests to HTTPS. Behind a reverse proxy on the same machine, uvicorn reads
++    # X-Forwarded-Proto (it trusts 127.0.0.1 by default), so this still works. See deploy/Caddyfile.
++    app.add_middleware(HTTPSRedirectMiddleware)
++
+ app.add_middleware(
+     CORSMiddleware,
+     allow_origins=settings.cors_origin_list,
+diff --git a/backend/app/schemas/auth.py b/backend/app/schemas/auth.py
+index 80ed402..ffd62d3 100644
+--- a/backend/app/schemas/auth.py
++++ b/backend/app/schemas/auth.py
+@@ -12,12 +12,37 @@ class LoginRequest(BaseModel):
+     password: str = Field(min_length=1, max_length=128)
+ 
+ 
++class EmailRequest(BaseModel):
++    email: str = Field(min_length=3, max_length=254)
++
++
++class TokenRequest(BaseModel):
++    token: str = Field(min_length=10, max_length=200)
++
++
++class ResetPasswordRequest(BaseModel):
++    token: str = Field(min_length=10, max_length=200)
++    password: str = Field(min_length=8, max_length=128)
++
++
+ class UserOut(BaseModel):
+     id: int
+     name: str
+     email: str
++    email_verified: bool = False
+ 
+ 
+ class AuthResponse(BaseModel):
+     token: str
+     user: UserOut
++
++
++class SignupResponse(BaseModel):
++    user: UserOut
++    # True when the account must verify its email before signing in. In that case there is no token yet.
++    verification_required: bool
++    token: str | None = None
++
++
++class MessageResponse(BaseModel):
++    message: str
+diff --git a/backend/app/services/auth_service.py b/backend/app/services/auth_service.py
+index 8e0f98f..6ef2b17 100644
+--- a/backend/app/services/auth_service.py
++++ b/backend/app/services/auth_service.py
+@@ -1,22 +1,39 @@
+-"""Accounts and login sessions (standard library only: no extra packages needed).
++"""Accounts, login sessions, email verification and password reset (standard library only).
+ 
+ - Passwords are hashed with scrypt and a random per-user salt. The plain password is never stored.
+-- A successful sign-up / login returns a random session token. Only its SHA-256 hash is stored,
+-  so a leaked database file does not reveal usable tokens.
+-- Failed logins are throttled in memory per email address (resets when the server restarts).
++- A successful login returns a random session token. Only its SHA-256 hash is stored, so a leaked
++  database file does not reveal usable tokens.
++- Verification and reset links contain a random single-use token. Only its hash is stored, and it
++  expires (24 hours for verification, 60 minutes for reset by default).
++- "Forgot password" and "resend verification" always give the same answer whether or not the email
++  exists, so they cannot be used to find out who has an account.
++- Failed logins and email requests are throttled in memory per email address (reset on restart).
+ """
+ 
+ import base64
+ import hashlib
+ import hmac
++import logging
+ import re
+ import secrets
+ import time
+ from datetime import datetime, timedelta, timezone
++from urllib.parse import quote
+ 
++from app.core.config import get_settings
+ from app.core.errors import AppError
+ from app.database.db import connect
+-from app.schemas.auth import AuthResponse, LoginRequest, SignupRequest, UserOut
++from app.schemas.auth import (
++    AuthResponse,
++    LoginRequest,
++    ResetPasswordRequest,
++    SignupRequest,
++    SignupResponse,
++    UserOut,
++)
++from app.services import email_service
++
++logger = logging.getLogger("zorvi.auth")
+ 
+ SESSION_DAYS = 30
+ _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**14, 8, 1
+@@ -27,6 +44,14 @@ MAX_FAILURES = 8
+ LOCK_SECONDS = 15 * 60
+ _failures: dict[str, list[float]] = {}
+ 
++# At most MAX_EMAILS verification / reset emails per address per window.
++MAX_EMAILS = 3
++EMAIL_WINDOW_SECONDS = 15 * 60
++_email_requests: dict[str, list[float]] = {}
++
++GENERIC_RESET_MESSAGE = "If an account exists for that email, we have sent a link to reset the password."
++GENERIC_VERIFY_MESSAGE = "If that account needs verification, we have sent a new link."
++
+ 
+ def _now() -> datetime:
+     return datetime.now(timezone.utc)
+@@ -79,6 +104,12 @@ def _normalise_email(email: str) -> str:
+     return email
+ 
+ 
++def _user_out(row) -> UserOut:
++    return UserOut(
++        id=row["id"], name=row["name"], email=row["email"], email_verified=bool(row["email_verified"])
++    )
++
++
+ def _issue_session(conn, user_id: int) -> str:
+     token = secrets.token_urlsafe(32)
+     now = _now()
+@@ -95,7 +126,60 @@ def _issue_session(conn, user_id: int) -> str:
+     return token
+ 
+ 
+-def signup(req: SignupRequest) -> AuthResponse:
++# --------------------------------------------------------- emailed one-time tokens
++
++
++def _issue_email_token(conn, user_id: int, purpose: str, lifetime: timedelta) -> str:
++    """Create a single-use token; any older unused token for the same user and purpose stops working."""
++    token = secrets.token_urlsafe(32)
++    now = _now()
++    conn.execute("DELETE FROM email_tokens WHERE expires_at < ?", (now.isoformat(),))
++    conn.execute("DELETE FROM email_tokens WHERE user_id = ? AND purpose = ?", (user_id, purpose))
++    conn.execute(
++        "INSERT INTO email_tokens (token_hash, user_id, purpose, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
++        (_token_hash(token), user_id, purpose, now.isoformat(), (now + lifetime).isoformat()),
++    )
++    return token
++
++
++def _consume_email_token(conn, token: str, purpose: str) -> int:
++    """Return the user id for a valid token and use it up. Raises a clear error otherwise."""
++    row = conn.execute(
++        "SELECT user_id, expires_at FROM email_tokens WHERE token_hash = ? AND purpose = ?",
++        (_token_hash(token), purpose),
++    ).fetchone()
++    if row is None:
++        raise AppError(400, "This link is invalid or has already been used. Please request a new one.")
++    conn.execute("DELETE FROM email_tokens WHERE token_hash = ?", (_token_hash(token),))
++    if datetime.fromisoformat(row["expires_at"]) < _now():
++        raise AppError(400, "This link has expired. Please request a new one.")
++    return row["user_id"]
++
++
++def _email_throttled(email: str) -> bool:
++    cutoff = time.time() - EMAIL_WINDOW_SECONDS
++    recent = [t for t in _email_requests.get(email, []) if t > cutoff]
++    if len(recent) >= MAX_EMAILS:
++        _email_requests[email] = recent
++        return True
++    recent.append(time.time())
++    _email_requests[email] = recent
++    return False
++
++
++def _send_verification(conn, user_id: int, name: str, email: str) -> None:
++    settings = get_settings()
++    token = _issue_email_token(conn, user_id, "verify", timedelta(hours=settings.verification_token_hours))
++    link = f"{settings.frontend_url.rstrip('/')}/verify-email?token={quote(token)}"
++    subject, body = email_service.verification_email(email, name, link, settings.verification_token_hours)
++    email_service.send_email(email, subject, body)
++
++
++# --------------------------------------------------------------------- accounts
++
++
++def signup(req: SignupRequest) -> SignupResponse:
++    settings = get_settings()
+     name = req.name.strip()
+     if not name:
+         raise AppError(422, "Please enter your name.")
+@@ -104,12 +188,16 @@ def signup(req: SignupRequest) -> AuthResponse:
+         if conn.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone():
+             raise AppError(409, "An account with this email already exists. Try signing in.")
+         cur = conn.execute(
+-            "INSERT INTO users (name, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
++            "INSERT INTO users (name, email, password_hash, created_at, email_verified) VALUES (?, ?, ?, ?, 0)",
+             (name, email, hash_password(req.password), _now().isoformat()),
+         )
+         user_id = cur.lastrowid
+-        token = _issue_session(conn, user_id)
+-    return AuthResponse(token=token, user=UserOut(id=user_id, name=name, email=email))
++        _email_requests.setdefault(email, []).append(time.time())
++        _send_verification(conn, user_id, name, email)
++        user = UserOut(id=user_id, name=name, email=email, email_verified=False)
++        if settings.require_email_verification:
++            return SignupResponse(user=user, verification_required=True)
++        return SignupResponse(user=user, verification_required=False, token=_issue_session(conn, user_id))
+ 
+ 
+ def _check_not_locked(email: str) -> None:
+@@ -121,28 +209,32 @@ def _check_not_locked(email: str) -> None:
+ 
+ 
+ def login(req: LoginRequest) -> AuthResponse:
++    settings = get_settings()
+     email = req.email.strip().lower()
+     _check_not_locked(email)
+     with connect() as conn:
+         row = conn.execute(
+-            "SELECT id, name, email, password_hash FROM users WHERE email = ?", (email,)
++            "SELECT id, name, email, password_hash, email_verified FROM users WHERE email = ?", (email,)
+         ).fetchone()
+         ok = verify_password(req.password, row["password_hash"] if row else _DUMMY_HASH)
+         if not row or not ok:
+             _failures.setdefault(email, []).append(time.time())
+             raise AppError(401, "Incorrect email or password.")
+         _failures.pop(email, None)
++        # Checked only after the password is right, so this cannot be used to discover accounts.
++        if settings.require_email_verification and not row["email_verified"]:
++            raise AppError(
++                403, "Please verify your email address before signing in. Check your inbox for the link."
++            )
+         token = _issue_session(conn, row["id"])
+-    return AuthResponse(
+-        token=token, user=UserOut(id=row["id"], name=row["name"], email=row["email"])
+-    )
++    return AuthResponse(token=token, user=_user_out(row))
+ 
+ 
+ def user_for_token(token: str) -> UserOut | None:
+     with connect() as conn:
+         row = conn.execute(
+             """
+-            SELECT u.id, u.name, u.email, s.expires_at
++            SELECT u.id, u.name, u.email, u.email_verified, s.expires_at
+             FROM sessions s JOIN users u ON u.id = s.user_id
+             WHERE s.token_hash = ?
+             """,
+@@ -150,9 +242,72 @@ def user_for_token(token: str) -> UserOut | None:
+         ).fetchone()
+     if not row or datetime.fromisoformat(row["expires_at"]) < _now():
+         return None
+-    return UserOut(id=row["id"], name=row["name"], email=row["email"])
++    return _user_out(row)
+ 
+ 
+ def logout(token: str) -> None:
+     with connect() as conn:
+         conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
++
++
++# ------------------------------------------------------------ email verification
++
++
++def verify_email(token: str) -> str:
++    with connect() as conn:
++        user_id = _consume_email_token(conn, token, "verify")
++        conn.execute("UPDATE users SET email_verified = 1 WHERE id = ?", (user_id,))
++    return "Your email is verified. You can now sign in."
++
++
++def resend_verification(email: str) -> str:
++    email = email.strip().lower()
++    if not _EMAIL_RE.match(email) or _email_throttled(email):
++        return GENERIC_VERIFY_MESSAGE
++    with connect() as conn:
++        row = conn.execute(
++            "SELECT id, name, email, email_verified FROM users WHERE email = ?", (email,)
++        ).fetchone()
++        if row and not row["email_verified"]:
++            _send_verification(conn, row["id"], row["name"], row["email"])
++    return GENERIC_VERIFY_MESSAGE
++
++
++# --------------------------------------------------------------- password reset
++
++
++def forgot_password(email: str) -> str:
++    settings = get_settings()
++    email = email.strip().lower()
++    if not _EMAIL_RE.match(email) or _email_throttled(email):
++        return GENERIC_RESET_MESSAGE
++    with connect() as conn:
++        row = conn.execute("SELECT id, name, email FROM users WHERE email = ?", (email,)).fetchone()
++        if row:
++            token = _issue_email_token(
++                conn, row["id"], "reset", timedelta(minutes=settings.reset_token_minutes)
++            )
++            link = f"{settings.frontend_url.rstrip('/')}/reset-password?token={quote(token)}"
++            subject, body = email_service.reset_email(
++                row["email"], row["name"], link, settings.reset_token_minutes
++            )
++            email_service.send_email(row["email"], subject, body)
++    return GENERIC_RESET_MESSAGE
++
++
++def reset_password(req: ResetPasswordRequest) -> str:
++    with connect() as conn:
++        user_id = _consume_email_token(conn, req.token, "reset")
++        row = conn.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
++        # Clicking the emailed link also proves the person owns this address.
++        conn.execute(
++            "UPDATE users SET password_hash = ?, email_verified = 1 WHERE id = ?",
++            (hash_password(req.password), user_id),
++        )
++        # Sign the account out everywhere: whoever had the old password (or a stolen session) loses access.
++        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
++        # Other unused reset/verify links for this account stop working too.
++        conn.execute("DELETE FROM email_tokens WHERE user_id = ?", (user_id,))
++    if row:
++        _failures.pop(row["email"], None)
++    return "Your password has been changed. Please sign in with the new password."
+diff --git a/backend/app/services/email_service.py b/backend/app/services/email_service.py
+new file mode 100644
+index 0000000..fe3dffc
+--- /dev/null
++++ b/backend/app/services/email_service.py
+@@ -0,0 +1,74 @@
++"""Sending email (standard library only).
++
++- If SMTP is configured, the message is sent in a background thread so a slow mail server never
++  delays the API response (this also keeps "does this email exist?" timing identical).
++- If SMTP is NOT configured and the app is not in production, the whole message, including its
++  link, is printed in the backend terminal. That is how you test verification and password reset
++  locally without a mail account.
++- In production without SMTP nothing is printed (links are secrets); an error is logged instead.
++"""
++
++import logging
++import smtplib
++import threading
++from email.message import EmailMessage
++
++from app.core.config import get_settings
++
++logger = logging.getLogger("zorvi.email")
++
++
++def _deliver(to: str, subject: str, body: str) -> None:
++    settings = get_settings()
++    msg = EmailMessage()
++    msg["Subject"] = subject
++    msg["From"] = settings.smtp_from.strip() or settings.smtp_username
++    msg["To"] = to
++    msg.set_content(body)
++    try:
++        if settings.smtp_use_ssl:
++            with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
++                if settings.smtp_username:
++                    smtp.login(settings.smtp_username, settings.smtp_password)
++                smtp.send_message(msg)
++        else:
++            with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
++                smtp.starttls()
++                if settings.smtp_username:
++                    smtp.login(settings.smtp_username, settings.smtp_password)
++                smtp.send_message(msg)
++    except Exception:  # never let a mail problem crash a request
++        logger.exception("Could not send email to %s", to)
++
++
++def send_email(to: str, subject: str, body: str) -> None:
++    settings = get_settings()
++    if settings.smtp_configured:
++        threading.Thread(target=_deliver, args=(to, subject, body), daemon=True).start()
++    elif not settings.is_production:
++        logger.warning(
++            "\n===== DEV EMAIL (SMTP is not configured, so nothing was sent) =====\n"
++            "To: %s\nSubject: %s\n\n%s\n===================================================================",
++            to,
++            subject,
++            body,
++        )
++    else:
++        logger.error("SMTP is not configured; email to %s was NOT sent. Set SMTP_HOST in backend/.env.", to)
++
++
++def verification_email(to: str, name: str, link: str, hours: int) -> tuple[str, str]:
++    return (
++        "Verify your email for Zorvi AI Studio",
++        f"Hi {name},\n\nWelcome to Zorvi AI Studio. Please confirm your email address:\n\n{link}\n\n"
++        f"This link works for {hours} hours. If you did not create an account, you can ignore this email.\n",
++    )
++
++
++def reset_email(to: str, name: str, link: str, minutes: int) -> tuple[str, str]:
++    return (
++        "Reset your Zorvi AI Studio password",
++        f"Hi {name},\n\nWe received a request to reset your password. Choose a new one here:\n\n{link}\n\n"
++        f"This link works for {minutes} minutes and can be used once. If you did not ask for this, "
++        "you can ignore this email and your password will stay the same.\n",
++    )
+diff --git a/backend/tests/test_auth_api.py b/backend/tests/test_auth_api.py
+index d12e313..de84bb1 100644
+--- a/backend/tests/test_auth_api.py
++++ b/backend/tests/test_auth_api.py
+@@ -6,10 +6,21 @@ SIGNUP = {"name": "Asha", "email": "Asha@Example.com", "password": "correct hors
+ 
+ 
+ @pytest.fixture(autouse=True)
+-def _reset_throttle():
++def _basic_auth_settings(monkeypatch):
++    """These tests cover plain sign up / login, so email verification is switched off here.
++    The verification and reset flows are tested in test_auth_email_flows.py."""
++    from app.core.config import get_settings
++    from app.services import email_service
++
++    monkeypatch.setenv("REQUIRE_EMAIL_VERIFICATION", "false")
++    monkeypatch.setattr(email_service, "send_email", lambda *a, **k: None)
++    get_settings.cache_clear()
+     auth_service._failures.clear()
++    auth_service._email_requests.clear()
+     yield
+     auth_service._failures.clear()
++    auth_service._email_requests.clear()
++    get_settings.cache_clear()
+ 
+ 
+ def _auth(token):
+diff --git a/backend/tests/test_auth_email_flows.py b/backend/tests/test_auth_email_flows.py
+new file mode 100644
+index 0000000..6f0ab1b
+--- /dev/null
++++ b/backend/tests/test_auth_email_flows.py
+@@ -0,0 +1,202 @@
++import re
++
++import pytest
++
++from app.services import auth_service, email_service
++
++USER = {"name": "Asha", "email": "asha@example.com", "password": "correct horse"}
++
++
++@pytest.fixture
++def mailbox(monkeypatch):
++    """Require verification and capture outgoing emails instead of sending them."""
++    from app.core.config import get_settings
++
++    monkeypatch.setenv("REQUIRE_EMAIL_VERIFICATION", "true")
++    monkeypatch.setenv("FRONTEND_URL", "https://zorvi.test")
++    get_settings.cache_clear()
++    auth_service._failures.clear()
++    auth_service._email_requests.clear()
++    sent: list[dict] = []
++    monkeypatch.setattr(
++        email_service, "send_email", lambda to, subject, body: sent.append({"to": to, "subject": subject, "body": body})
++    )
++    yield sent
++    auth_service._failures.clear()
++    auth_service._email_requests.clear()
++    get_settings.cache_clear()
++
++
++def _token_from(mail: dict, page: str) -> str:
++    match = re.search(rf"https://zorvi\.test/{page}\?token=([\w\-]+)", mail["body"])
++    assert match, mail["body"]
++    return match.group(1)
++
++
++def _login(client, password=USER["password"]):
++    return client.post("/api/auth/login", json={"email": USER["email"], "password": password})
++
++
++def test_signup_requires_verification_before_login(client, mailbox):
++    r = client.post("/api/auth/signup", json=USER)
++    assert r.status_code == 201
++    body = r.json()
++    assert body["verification_required"] is True
++    assert body["token"] is None
++    assert len(mailbox) == 1 and mailbox[0]["to"] == USER["email"]
++
++    blocked = _login(client)
++    assert blocked.status_code == 403
++    assert "verify" in blocked.json()["detail"].lower()
++
++
++def test_wrong_password_is_not_told_to_verify(client, mailbox):
++    client.post("/api/auth/signup", json=USER)
++    assert _login(client, "totally wrong").status_code == 401  # not 403: no hint that the account exists
++
++
++def test_verify_email_then_login(client, mailbox):
++    client.post("/api/auth/signup", json=USER)
++    token = _token_from(mailbox[0], "verify-email")
++
++    r = client.post("/api/auth/verify-email", json={"token": token})
++    assert r.status_code == 200
++
++    ok = _login(client)
++    assert ok.status_code == 200
++    assert ok.json()["user"]["email_verified"] is True
++
++
++def test_verification_link_is_single_use(client, mailbox):
++    client.post("/api/auth/signup", json=USER)
++    token = _token_from(mailbox[0], "verify-email")
++    assert client.post("/api/auth/verify-email", json={"token": token}).status_code == 200
++    assert client.post("/api/auth/verify-email", json={"token": token}).status_code == 400
++
++
++def test_invalid_verification_token(client, mailbox):
++    assert client.post("/api/auth/verify-email", json={"token": "x" * 40}).status_code == 400
++
++
++def test_expired_verification_token(client, mailbox):
++    from app.database.db import connect
++
++    client.post("/api/auth/signup", json=USER)
++    token = _token_from(mailbox[0], "verify-email")
++    with connect() as conn:
++        conn.execute("UPDATE email_tokens SET expires_at = '2000-01-01T00:00:00+00:00'")
++    r = client.post("/api/auth/verify-email", json={"token": token})
++    assert r.status_code == 400
++    assert "expired" in r.json()["detail"].lower()
++
++
++def test_resend_verification_invalidates_older_link(client, mailbox):
++    client.post("/api/auth/signup", json=USER)
++    first = _token_from(mailbox[0], "verify-email")
++    r = client.post("/api/auth/resend-verification", json={"email": USER["email"]})
++    assert r.status_code == 200
++    assert len(mailbox) == 2
++    second = _token_from(mailbox[1], "verify-email")
++    assert first != second
++    assert client.post("/api/auth/verify-email", json={"token": first}).status_code == 400
++    assert client.post("/api/auth/verify-email", json={"token": second}).status_code == 200
++
++
++def test_resend_does_not_reveal_unknown_emails(client, mailbox):
++    known = client.post("/api/auth/resend-verification", json={"email": "nobody@example.com"})
++    assert known.status_code == 200
++    assert known.json()["message"] == auth_service.GENERIC_VERIFY_MESSAGE
++    assert mailbox == []
++
++
++def test_forgot_password_sends_link_and_hides_unknown_emails(client, mailbox):
++    client.post("/api/auth/signup", json=USER)
++    mailbox.clear()
++
++    unknown = client.post("/api/auth/forgot-password", json={"email": "nobody@example.com"})
++    known = client.post("/api/auth/forgot-password", json={"email": USER["email"]})
++    assert unknown.status_code == known.status_code == 200
++    assert unknown.json() == known.json()  # identical answer either way
++    assert len(mailbox) == 1 and mailbox[0]["to"] == USER["email"]
++
++
++def test_reset_password_flow(client, mailbox):
++    client.post("/api/auth/signup", json=USER)
++    client.post("/api/auth/verify-email", json={"token": _token_from(mailbox[0], "verify-email")})
++    old_session = _login(client).json()["token"]
++
++    client.post("/api/auth/forgot-password", json={"email": USER["email"]})
++    token = _token_from(mailbox[-1], "reset-password")
++    r = client.post("/api/auth/reset-password", json={"token": token, "password": "brand new pass"})
++    assert r.status_code == 200
++
++    assert _login(client).status_code == 401  # old password no longer works
++    assert _login(client, "brand new pass").status_code == 200
++    # every session that existed before the reset was signed out
++    assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {old_session}"}).status_code == 401
++    # the link cannot be used twice
++    again = client.post("/api/auth/reset-password", json={"token": token, "password": "another pass 1"})
++    assert again.status_code == 400
++
++
++def test_reset_validates_new_password_and_token(client, mailbox):
++    client.post("/api/auth/signup", json=USER)
++    client.post("/api/auth/forgot-password", json={"email": USER["email"]})
++    token = _token_from(mailbox[-1], "reset-password")
++    assert client.post("/api/auth/reset-password", json={"token": token, "password": "short"}).status_code == 422
++    assert client.post("/api/auth/reset-password", json={"token": "y" * 40, "password": "long enough pw"}).status_code == 400
++    # a verification link cannot be used to reset a password
++    verify_token = _token_from(mailbox[0], "verify-email")
++    assert client.post("/api/auth/reset-password", json={"token": verify_token, "password": "long enough pw"}).status_code == 400
++
++
++def test_reset_also_verifies_email(client, mailbox):
++    client.post("/api/auth/signup", json=USER)
++    client.post("/api/auth/forgot-password", json={"email": USER["email"]})
++    token = _token_from(mailbox[-1], "reset-password")
++    client.post("/api/auth/reset-password", json={"token": token, "password": "brand new pass"})
++    assert _login(client, "brand new pass").status_code == 200
++
++
++def test_email_requests_are_throttled(client, mailbox):
++    client.post("/api/auth/signup", json=USER)
++    mailbox.clear()
++    for _ in range(auth_service.MAX_EMAILS + 3):
++        client.post("/api/auth/forgot-password", json={"email": USER["email"]})
++    assert len(mailbox) < auth_service.MAX_EMAILS + 3  # extra requests were silently dropped
++
++
++def test_tokens_are_stored_hashed(client, mailbox):
++    from app.database.db import connect
++
++    client.post("/api/auth/signup", json=USER)
++    token = _token_from(mailbox[0], "verify-email")
++    with connect() as conn:
++        stored = conn.execute("SELECT token_hash FROM email_tokens").fetchone()["token_hash"]
++    assert token not in stored
++
++
++def test_old_database_is_upgraded(tmp_path, monkeypatch):
++    """A users table made by the earlier version (no email_verified column) is upgraded, and existing
++    accounts count as verified so nobody is locked out."""
++    import sqlite3
++
++    from app.core.config import get_settings
++
++    monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
++    get_settings.cache_clear()
++    (tmp_path / "storage").mkdir()
++    old = sqlite3.connect(tmp_path / "storage" / "zorvi.db")
++    old.execute(
++        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, "
++        "email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)"
++    )
++    old.execute("INSERT INTO users (name, email, password_hash, created_at) VALUES ('Old', 'old@example.com', 'x', 'now')")
++    old.commit()
++    old.close()
++
++    from app.database.db import connect
++
++    with connect() as conn:
++        assert conn.execute("SELECT email_verified FROM users").fetchone()["email_verified"] == 1
++    get_settings.cache_clear()
+diff --git a/backend/tests/test_security_headers.py b/backend/tests/test_security_headers.py
+new file mode 100644
+index 0000000..dcd64d6
+--- /dev/null
++++ b/backend/tests/test_security_headers.py
+@@ -0,0 +1,10 @@
++def test_security_headers_present(client):
++    r = client.get("/api/health")
++    assert r.headers["x-content-type-options"] == "nosniff"
++    assert r.headers["referrer-policy"] == "no-referrer"
++
++
++def test_auth_responses_are_not_cacheable(client):
++    r = client.post("/api/auth/forgot-password", json={"email": "someone@example.com"})
++    assert r.status_code == 200
++    assert r.headers["cache-control"] == "no-store"
+diff --git a/deploy/Caddyfile b/deploy/Caddyfile
+new file mode 100644
+index 0000000..0d0c651
+--- /dev/null
++++ b/deploy/Caddyfile
+@@ -0,0 +1,22 @@
++# Production HTTPS with Caddy (https://caddyserver.com): free certificates from Let's Encrypt,
++# renewed automatically. The site and the API share one address, so no CORS setup is needed.
++#
++# Before you start:
++#   1. Point your domain's DNS A/AAAA record at this server and open ports 80 and 443.
++#   2. Run the backend and frontend on this server (see README "Going live with HTTPS").
++#   3. Start Caddy from this folder:   APP_DOMAIN=zorvi.example.com caddy run --config Caddyfile
++
++{$APP_DOMAIN} {
++	encode gzip
++
++	# Backend API (FastAPI, port 8000) and its interactive docs
++	@backend path /api/* /docs /docs/* /openapi.json
++	handle @backend {
++		reverse_proxy 127.0.0.1:8000
++	}
++
++	# Everything else is the website (Next.js, port 3000)
++	handle {
++		reverse_proxy 127.0.0.1:3000
++	}
++}
+diff --git a/frontend/.env.example b/frontend/.env.example
+index 18a46f3..4497907 100644
+--- a/frontend/.env.example
++++ b/frontend/.env.example
+@@ -1,3 +1,8 @@
+ # Copy to .env.local (never commit it). This is the ONLY place the backend URL is set.
+ # Do not put secrets here: NEXT_PUBLIC_* values are visible in the browser.
+ NEXT_PUBLIC_API_URL=http://localhost:8000
++
++# Production: set to your https address (e.g. https://zorvi.example.com), then run `npm run build` again;
++# NEXT_PUBLIC_* values are fixed into the build. Local HTTPS: https://localhost:8000
++# Optional, production site only: send the HSTS header (see README, "Going live with HTTPS").
++# ENABLE_HSTS=true
+diff --git a/frontend/next.config.mjs b/frontend/next.config.mjs
+index d5456a1..2067c56 100644
+--- a/frontend/next.config.mjs
++++ b/frontend/next.config.mjs
+@@ -1,6 +1,25 @@
+ /** @type {import('next').NextConfig} */
++const securityHeaders = [
++  { key: "X-Content-Type-Options", value: "nosniff" },
++  { key: "X-Frame-Options", value: "DENY" },
++  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
++];
++
++// HSTS tells browsers to use HTTPS for this site for a year. It is opt-in because browsers apply it
++// to the whole host name (including "localhost" on every port). Set ENABLE_HSTS=true only for the
++// real production site, which must be served over HTTPS.
++if (process.env.ENABLE_HSTS === "true") {
++  securityHeaders.push({
++    key: "Strict-Transport-Security",
++    value: "max-age=31536000; includeSubDomains",
++  });
++}
++
+ const nextConfig = {
+   reactStrictMode: true,
++  async headers() {
++    return [{ source: "/:path*", headers: securityHeaders }];
++  },
+ };
+ 
+ export default nextConfig;
+diff --git a/frontend/package.json b/frontend/package.json
+index 7fd6e69..15e0c50 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -7,7 +7,8 @@
+     "build": "next build",
+     "start": "next start -p 3000",
+     "lint": "next lint",
+-    "typecheck": "tsc --noEmit"
++    "typecheck": "tsc --noEmit",
++    "dev:https": "next dev -p 3000 --experimental-https --experimental-https-key ../certs/localhost-key.pem --experimental-https-cert ../certs/localhost.pem"
+   },
+   "dependencies": {
+     "lucide-react": "^0.460.0",
+diff --git a/frontend/src/app/forgot-password/page.tsx b/frontend/src/app/forgot-password/page.tsx
+new file mode 100644
+index 0000000..d44e906
+--- /dev/null
++++ b/frontend/src/app/forgot-password/page.tsx
+@@ -0,0 +1,5 @@
++import { ForgotPasswordForm } from "@/components/ForgotPasswordForm";
++
++export default function ForgotPasswordPage() {
++  return <ForgotPasswordForm />;
++}
+diff --git a/frontend/src/app/reset-password/page.tsx b/frontend/src/app/reset-password/page.tsx
+new file mode 100644
+index 0000000..b76b828
+--- /dev/null
++++ b/frontend/src/app/reset-password/page.tsx
+@@ -0,0 +1,12 @@
++import { Suspense } from "react";
++
++import { ResetPasswordForm } from "@/components/ResetPasswordForm";
++
++export default function ResetPasswordPage() {
++  // useSearchParams() needs a Suspense boundary for production builds.
++  return (
++    <Suspense fallback={null}>
++      <ResetPasswordForm />
++    </Suspense>
++  );
++}
+diff --git a/frontend/src/app/verify-email/page.tsx b/frontend/src/app/verify-email/page.tsx
+new file mode 100644
+index 0000000..b3bd7fd
+--- /dev/null
++++ b/frontend/src/app/verify-email/page.tsx
+@@ -0,0 +1,12 @@
++import { Suspense } from "react";
++
++import { VerifyEmail } from "@/components/VerifyEmail";
++
++export default function VerifyEmailPage() {
++  // useSearchParams() needs a Suspense boundary for production builds.
++  return (
++    <Suspense fallback={null}>
++      <VerifyEmail />
++    </Suspense>
++  );
++}
+diff --git a/frontend/src/components/AppShell.tsx b/frontend/src/components/AppShell.tsx
+index d773838..6329c17 100644
+--- a/frontend/src/components/AppShell.tsx
++++ b/frontend/src/components/AppShell.tsx
+@@ -6,10 +6,13 @@ import { useEffect, useState, type ReactNode } from "react";
+ 
+ import { Sidebar } from "./Sidebar";
+ 
++/** Pages shown full-screen, without the sidebar. */
++const AUTH_PATHS = ["/login", "/signup", "/forgot-password", "/reset-password", "/verify-email"];
++
+ export function AppShell({ children }: { children: ReactNode }) {
+   const [open, setOpen] = useState(false);
+   const pathname = usePathname();
+-  const isAuthPage = pathname === "/login" || pathname === "/signup";
++  const isAuthPage = AUTH_PATHS.includes(pathname);
+ 
+   // Close the mobile drawer with Escape
+   useEffect(() => {
+diff --git a/frontend/src/components/AuthCard.tsx b/frontend/src/components/AuthCard.tsx
+new file mode 100644
+index 0000000..1e7f6d2
+--- /dev/null
++++ b/frontend/src/components/AuthCard.tsx
+@@ -0,0 +1,44 @@
++import { Sparkles } from "lucide-react";
++import Link from "next/link";
++import type { ReactNode } from "react";
++
++/** Shared full-screen layout for the sign in, sign up, verify and reset pages. */
++export function AuthCard({
++  title,
++  subtitle,
++  children,
++  footer,
++}: {
++  title: string;
++  subtitle?: string;
++  children: ReactNode;
++  footer?: ReactNode;
++}) {
++  return (
++    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-12">
++      <div className="w-full max-w-md">
++        <div className="mb-6 flex items-center justify-center gap-2">
++          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-600 text-white">
++            <Sparkles className="h-5 w-5" aria-hidden="true" />
++          </span>
++          <span className="text-xl font-semibold tracking-tight text-navy-900">
++            Zorvi <span className="text-brand-600">AI</span>
++          </span>
++        </div>
++
++        <div className="rounded-2xl bg-white p-6 shadow-card sm:p-8">
++          <h1 className="text-xl font-bold text-slate-900">{title}</h1>
++          {subtitle && <p className="mt-1 text-sm text-slate-600">{subtitle}</p>}
++          <div className="mt-6">{children}</div>
++          {footer && <div className="mt-6 text-center text-sm text-slate-600">{footer}</div>}
++        </div>
++
++        <p className="mt-4 text-center text-sm">
++          <Link href="/" className="text-slate-500 hover:text-slate-700">
++            Continue without signing in
++          </Link>
++        </p>
++      </div>
++    </div>
++  );
++}
+diff --git a/frontend/src/components/AuthForm.tsx b/frontend/src/components/AuthForm.tsx
+index 33c2746..ff72fab 100644
+--- a/frontend/src/components/AuthForm.tsx
++++ b/frontend/src/components/AuthForm.tsx
+@@ -1,14 +1,19 @@
+ "use client";
+ 
+-import { Loader2, Sparkles } from "lucide-react";
++import { Loader2, MailCheck } from "lucide-react";
+ import Link from "next/link";
+ import { useRouter } from "next/navigation";
+ import { useEffect, useState, type FormEvent } from "react";
+ 
++import { AuthCard } from "@/components/AuthCard";
++import { ApiError, apiResendVerification } from "@/lib/api";
+ import { useAuth } from "@/lib/auth";
+ 
+-const inputClass =
++export const authInputClass =
+   "mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400";
++export const authButtonClass =
++  "flex w-full items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60";
++const linkClass = "font-semibold text-brand-600 hover:text-brand-700";
+ 
+ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
+   const isSignup = mode === "signup";
+@@ -20,6 +25,9 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
+   const [password, setPassword] = useState("");
+   const [busy, setBusy] = useState(false);
+   const [error, setError] = useState<string | null>(null);
++  const [needsVerification, setNeedsVerification] = useState(false);
++  const [sentTo, setSentTo] = useState<string | null>(null); // set after sign-up when verification is required
++  const [resendNote, setResendNote] = useState<string | null>(null);
+ 
+   // Already signed in? Go to the dashboard.
+   useEffect(() => {
+@@ -29,127 +37,179 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
+   const onSubmit = async (e: FormEvent) => {
+     e.preventDefault();
+     setError(null);
++    setNeedsVerification(false);
++    setResendNote(null);
+     if (isSignup && password.length < 8) {
+       setError("Password must be at least 8 characters.");
+       return;
+     }
+     setBusy(true);
+     try {
+-      if (isSignup) await signup(name.trim(), email.trim(), password);
+-      else await login(email.trim(), password);
++      if (isSignup) {
++        const { verificationRequired } = await signup(name.trim(), email.trim(), password);
++        if (verificationRequired) {
++          setSentTo(email.trim());
++          setBusy(false);
++          return;
++        }
++      } else {
++        await login(email.trim(), password);
++      }
+       router.replace("/");
+     } catch (err) {
+       setError(err instanceof Error ? err.message : "Something went wrong.");
++      // The backend answers 403 only when the password was right but the email is not verified yet.
++      setNeedsVerification(err instanceof ApiError && err.status === 403);
+       setBusy(false);
+     }
+   };
+ 
+-  return (
+-    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-12">
+-      <div className="w-full max-w-md">
+-        <div className="mb-6 flex items-center justify-center gap-2">
+-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-600 text-white">
+-            <Sparkles className="h-5 w-5" aria-hidden="true" />
+-          </span>
+-          <span className="text-xl font-semibold tracking-tight text-navy-900">
+-            Zorvi <span className="text-brand-600">AI</span>
+-          </span>
+-        </div>
++  const resend = async (address: string) => {
++    setResendNote(null);
++    try {
++      const res = await apiResendVerification(address);
++      setResendNote(res.message);
++    } catch (err) {
++      setResendNote(err instanceof Error ? err.message : "Could not resend the email.");
++    }
++  };
+ 
+-        <div className="rounded-2xl bg-white p-6 shadow-card sm:p-8">
+-          <h1 className="text-xl font-bold text-slate-900">
+-            {isSignup ? "Create your account" : "Welcome back"}
+-          </h1>
+-          <p className="mt-1 text-sm text-slate-600">
+-            {isSignup
+-              ? "Sign up to start creating marketing content."
+-              : "Sign in to continue to Zorvi AI Studio."}
++  // After sign-up: tell the user to check their inbox.
++  if (sentTo) {
++    return (
++      <AuthCard
++        title="Check your email"
++        subtitle={`We sent a verification link to ${sentTo}. Click it to activate your account, then sign in.`}
++        footer={
++          <Link href="/login" className={linkClass}>
++            Go to sign in
++          </Link>
++        }
++      >
++        <div className="flex items-start gap-3 rounded-lg bg-brand-50 p-4 text-sm text-slate-700">
++          <MailCheck className="mt-0.5 h-5 w-5 shrink-0 text-brand-600" aria-hidden="true" />
++          <p>Can&apos;t find it? Check your spam folder, or ask for a new link.</p>
++        </div>
++        <button
++          type="button"
++          onClick={() => resend(sentTo)}
++          className="mt-4 w-full rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
++        >
++          Resend verification email
++        </button>
++        {resendNote && (
++          <p role="status" className="mt-3 text-center text-sm text-slate-600">
++            {resendNote}
+           </p>
++        )}
++      </AuthCard>
++    );
++  }
+ 
+-          <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>
+-            {isSignup && (
+-              <div>
+-                <label htmlFor="name" className="text-sm font-medium text-slate-700">
+-                  Name
+-                </label>
+-                <input
+-                  id="name"
+-                  type="text"
+-                  autoComplete="name"
+-                  required
+-                  maxLength={80}
+-                  value={name}
+-                  onChange={(e) => setName(e.target.value)}
+-                  className={inputClass}
+-                  placeholder="Your name"
+-                />
+-              </div>
++  return (
++    <AuthCard
++      title={isSignup ? "Create your account" : "Welcome back"}
++      subtitle={
++        isSignup
++          ? "Sign up to start creating marketing content."
++          : "Sign in to continue to Zorvi AI Studio."
++      }
++      footer={
++        <>
++          {isSignup ? "Already have an account?" : "New to Zorvi?"}{" "}
++          <Link href={isSignup ? "/login" : "/signup"} className={linkClass}>
++            {isSignup ? "Sign in" : "Create an account"}
++          </Link>
++        </>
++      }
++    >
++      <form onSubmit={onSubmit} className="space-y-4" noValidate>
++        {isSignup && (
++          <div>
++            <label htmlFor="name" className="text-sm font-medium text-slate-700">
++              Name
++            </label>
++            <input
++              id="name"
++              type="text"
++              autoComplete="name"
++              required
++              maxLength={80}
++              value={name}
++              onChange={(e) => setName(e.target.value)}
++              className={authInputClass}
++              placeholder="Your name"
++            />
++          </div>
++        )}
++        <div>
++          <label htmlFor="email" className="text-sm font-medium text-slate-700">
++            Email
++          </label>
++          <input
++            id="email"
++            type="email"
++            autoComplete="email"
++            required
++            value={email}
++            onChange={(e) => setEmail(e.target.value)}
++            className={authInputClass}
++            placeholder="you@example.com"
++          />
++        </div>
++        <div>
++          <div className="flex items-center justify-between">
++            <label htmlFor="password" className="text-sm font-medium text-slate-700">
++              Password
++            </label>
++            {!isSignup && (
++              <Link href="/forgot-password" className="text-sm text-brand-600 hover:text-brand-700">
++                Forgot password?
++              </Link>
+             )}
+-            <div>
+-              <label htmlFor="email" className="text-sm font-medium text-slate-700">
+-                Email
+-              </label>
+-              <input
+-                id="email"
+-                type="email"
+-                autoComplete="email"
+-                required
+-                value={email}
+-                onChange={(e) => setEmail(e.target.value)}
+-                className={inputClass}
+-                placeholder="you@example.com"
+-              />
+-            </div>
+-            <div>
+-              <label htmlFor="password" className="text-sm font-medium text-slate-700">
+-                Password
+-              </label>
+-              <input
+-                id="password"
+-                type="password"
+-                autoComplete={isSignup ? "new-password" : "current-password"}
+-                required
+-                minLength={isSignup ? 8 : undefined}
+-                value={password}
+-                onChange={(e) => setPassword(e.target.value)}
+-                className={inputClass}
+-                placeholder={isSignup ? "At least 8 characters" : "Your password"}
+-              />
+-            </div>
++          </div>
++          <input
++            id="password"
++            type="password"
++            autoComplete={isSignup ? "new-password" : "current-password"}
++            required
++            minLength={isSignup ? 8 : undefined}
++            value={password}
++            onChange={(e) => setPassword(e.target.value)}
++            className={authInputClass}
++            placeholder={isSignup ? "At least 8 characters" : "Your password"}
++          />
++        </div>
+ 
+-            {error && (
+-              <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+-                {error}
+-              </p>
++        {error && (
++          <div role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
++            <p>{error}</p>
++            {needsVerification && (
++              <button
++                type="button"
++                onClick={() => resend(email.trim())}
++                className="mt-1 font-semibold underline"
++              >
++                Resend verification email
++              </button>
+             )}
+-
+-            <button
+-              type="submit"
+-              disabled={busy || !email || !password || (isSignup && !name.trim())}
+-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
+-            >
+-              {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+-              {isSignup ? "Create account" : "Sign in"}
+-            </button>
+-          </form>
+-
+-          <p className="mt-6 text-center text-sm text-slate-600">
+-            {isSignup ? "Already have an account?" : "New to Zorvi?"}{" "}
+-            <Link
+-              href={isSignup ? "/login" : "/signup"}
+-              className="font-semibold text-brand-600 hover:text-brand-700"
+-            >
+-              {isSignup ? "Sign in" : "Create an account"}
+-            </Link>
++          </div>
++        )}
++        {resendNote && (
++          <p role="status" className="text-sm text-slate-600">
++            {resendNote}
+           </p>
+-        </div>
++        )}
+ 
+-        <p className="mt-4 text-center text-sm">
+-          <Link href="/" className="text-slate-500 hover:text-slate-700">
+-            Continue without signing in
+-          </Link>
+-        </p>
+-      </div>
+-    </div>
++        <button
++          type="submit"
++          disabled={busy || !email || !password || (isSignup && !name.trim())}
++          className={authButtonClass}
++        >
++          {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
++          {isSignup ? "Create account" : "Sign in"}
++        </button>
++      </form>
++    </AuthCard>
+   );
+ }
+diff --git a/frontend/src/components/ForgotPasswordForm.tsx b/frontend/src/components/ForgotPasswordForm.tsx
+new file mode 100644
+index 0000000..842fbe4
+--- /dev/null
++++ b/frontend/src/components/ForgotPasswordForm.tsx
+@@ -0,0 +1,75 @@
++"use client";
++
++import { Loader2, MailCheck } from "lucide-react";
++import Link from "next/link";
++import { useState, type FormEvent } from "react";
++
++import { AuthCard } from "@/components/AuthCard";
++import { authButtonClass, authInputClass } from "@/components/AuthForm";
++import { apiForgotPassword } from "@/lib/api";
++
++export function ForgotPasswordForm() {
++  const [email, setEmail] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [done, setDone] = useState<string | null>(null);
++  const [error, setError] = useState<string | null>(null);
++
++  const onSubmit = async (e: FormEvent) => {
++    e.preventDefault();
++    setBusy(true);
++    setError(null);
++    try {
++      setDone((await apiForgotPassword(email.trim())).message);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : "Something went wrong.");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  return (
++    <AuthCard
++      title="Forgot your password?"
++      subtitle="Enter your email and we'll send you a link to choose a new one."
++      footer={
++        <Link href="/login" className="font-semibold text-brand-600 hover:text-brand-700">
++          Back to sign in
++        </Link>
++      }
++    >
++      {done ? (
++        <div role="status" className="flex items-start gap-3 rounded-lg bg-brand-50 p-4 text-sm text-slate-700">
++          <MailCheck className="mt-0.5 h-5 w-5 shrink-0 text-brand-600" aria-hidden="true" />
++          <p>{done} The link works for a limited time and can be used once.</p>
++        </div>
++      ) : (
++        <form onSubmit={onSubmit} className="space-y-4" noValidate>
++          <div>
++            <label htmlFor="email" className="text-sm font-medium text-slate-700">
++              Email
++            </label>
++            <input
++              id="email"
++              type="email"
++              autoComplete="email"
++              required
++              value={email}
++              onChange={(e) => setEmail(e.target.value)}
++              className={authInputClass}
++              placeholder="you@example.com"
++            />
++          </div>
++          {error && (
++            <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
++              {error}
++            </p>
++          )}
++          <button type="submit" disabled={busy || !email.trim()} className={authButtonClass}>
++            {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
++            Send reset link
++          </button>
++        </form>
++      )}
++    </AuthCard>
++  );
++}
+diff --git a/frontend/src/components/ResetPasswordForm.tsx b/frontend/src/components/ResetPasswordForm.tsx
+new file mode 100644
+index 0000000..6caed8f
+--- /dev/null
++++ b/frontend/src/components/ResetPasswordForm.tsx
+@@ -0,0 +1,120 @@
++"use client";
++
++import { CheckCircle2, Loader2 } from "lucide-react";
++import Link from "next/link";
++import { useSearchParams } from "next/navigation";
++import { useState, type FormEvent } from "react";
++
++import { AuthCard } from "@/components/AuthCard";
++import { authButtonClass, authInputClass } from "@/components/AuthForm";
++import { apiResetPassword } from "@/lib/api";
++
++export function ResetPasswordForm() {
++  const token = useSearchParams().get("token") ?? "";
++  const [password, setPassword] = useState("");
++  const [confirm, setConfirm] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [done, setDone] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  const onSubmit = async (e: FormEvent) => {
++    e.preventDefault();
++    setError(null);
++    if (password.length < 8) {
++      setError("Password must be at least 8 characters.");
++      return;
++    }
++    if (password !== confirm) {
++      setError("The two passwords do not match.");
++      return;
++    }
++    setBusy(true);
++    try {
++      await apiResetPassword(token, password);
++      setDone(true);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : "Something went wrong.");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  if (!token) {
++    return (
++      <AuthCard
++        title="Reset link is incomplete"
++        footer={
++          <Link href="/forgot-password" className="font-semibold text-brand-600 hover:text-brand-700">
++            Request a new link
++          </Link>
++        }
++      >
++        <p className="text-sm text-slate-600">
++          This page needs the link from your email. Open the full link, or request a new one.
++        </p>
++      </AuthCard>
++    );
++  }
++
++  if (done) {
++    return (
++      <AuthCard title="Password changed">
++        <div role="status" className="flex items-start gap-3 rounded-lg bg-green-50 p-4 text-sm text-slate-700">
++          <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-green-600" aria-hidden="true" />
++          <p>Your password has been updated and you were signed out everywhere. Sign in with the new one.</p>
++        </div>
++        <Link href="/login" className={`${authButtonClass} mt-4`}>
++          Go to sign in
++        </Link>
++      </AuthCard>
++    );
++  }
++
++  return (
++    <AuthCard title="Choose a new password" subtitle="Use at least 8 characters.">
++      <form onSubmit={onSubmit} className="space-y-4" noValidate>
++        <div>
++          <label htmlFor="password" className="text-sm font-medium text-slate-700">
++            New password
++          </label>
++          <input
++            id="password"
++            type="password"
++            autoComplete="new-password"
++            required
++            minLength={8}
++            value={password}
++            onChange={(e) => setPassword(e.target.value)}
++            className={authInputClass}
++          />
++        </div>
++        <div>
++          <label htmlFor="confirm" className="text-sm font-medium text-slate-700">
++            Confirm new password
++          </label>
++          <input
++            id="confirm"
++            type="password"
++            autoComplete="new-password"
++            required
++            value={confirm}
++            onChange={(e) => setConfirm(e.target.value)}
++            className={authInputClass}
++          />
++        </div>
++        {error && (
++          <div role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
++            <p>{error}</p>
++            <Link href="/forgot-password" className="mt-1 inline-block font-semibold underline">
++              Request a new link
++            </Link>
++          </div>
++        )}
++        <button type="submit" disabled={busy || !password || !confirm} className={authButtonClass}>
++          {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
++          Change password
++        </button>
++      </form>
++    </AuthCard>
++  );
++}
+diff --git a/frontend/src/components/VerifyEmail.tsx b/frontend/src/components/VerifyEmail.tsx
+new file mode 100644
+index 0000000..0b61ed4
+--- /dev/null
++++ b/frontend/src/components/VerifyEmail.tsx
+@@ -0,0 +1,95 @@
++"use client";
++
++import { CheckCircle2, Loader2, XCircle } from "lucide-react";
++import Link from "next/link";
++import { useSearchParams } from "next/navigation";
++import { useEffect, useRef, useState } from "react";
++
++import { AuthCard } from "@/components/AuthCard";
++import { authButtonClass, authInputClass } from "@/components/AuthForm";
++import { apiResendVerification, apiVerifyEmail } from "@/lib/api";
++
++type State = { kind: "checking" } | { kind: "ok"; message: string } | { kind: "error"; message: string };
++
++export function VerifyEmail() {
++  const token = useSearchParams().get("token") ?? "";
++  const [state, setState] = useState<State>(
++    token ? { kind: "checking" } : { kind: "error", message: "This page needs the link from your email." },
++  );
++  const started = useRef(false); // the link is single-use, so only ever call the backend once
++  const [email, setEmail] = useState("");
++  const [note, setNote] = useState<string | null>(null);
++
++  useEffect(() => {
++    if (!token || started.current) return;
++    started.current = true;
++    apiVerifyEmail(token)
++      .then((res) => setState({ kind: "ok", message: res.message }))
++      .catch((err) =>
++        setState({ kind: "error", message: err instanceof Error ? err.message : "Something went wrong." }),
++      );
++  }, [token]);
++
++  const resend = async () => {
++    setNote(null);
++    try {
++      setNote((await apiResendVerification(email.trim())).message);
++    } catch (err) {
++      setNote(err instanceof Error ? err.message : "Could not resend the email.");
++    }
++  };
++
++  return (
++    <AuthCard title="Email verification">
++      {state.kind === "checking" && (
++        <p className="flex items-center gap-2 text-sm text-slate-600">
++          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Verifying your email...
++        </p>
++      )}
++
++      {state.kind === "ok" && (
++        <>
++          <div role="status" className="flex items-start gap-3 rounded-lg bg-green-50 p-4 text-sm text-slate-700">
++            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-green-600" aria-hidden="true" />
++            <p>{state.message}</p>
++          </div>
++          <Link href="/login" className={`${authButtonClass} mt-4`}>
++            Go to sign in
++          </Link>
++        </>
++      )}
++
++      {state.kind === "error" && (
++        <>
++          <div role="alert" className="flex items-start gap-3 rounded-lg bg-red-50 p-4 text-sm text-red-700">
++            <XCircle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
++            <p>{state.message}</p>
++          </div>
++          <p className="mt-4 text-sm text-slate-600">Enter your email to get a new verification link.</p>
++          <input
++            type="email"
++            aria-label="Email"
++            autoComplete="email"
++            value={email}
++            onChange={(e) => setEmail(e.target.value)}
++            className={authInputClass}
++            placeholder="you@example.com"
++          />
++          <button
++            type="button"
++            onClick={resend}
++            disabled={!email.trim()}
++            className={`${authButtonClass} mt-3`}
++          >
++            Send a new link
++          </button>
++          {note && (
++            <p role="status" className="mt-3 text-sm text-slate-600">
++              {note}
++            </p>
++          )}
++        </>
++      )}
++    </AuthCard>
++  );
++}
+diff --git a/frontend/src/lib/api.ts b/frontend/src/lib/api.ts
+index a8d342c..3e1be9c 100644
+--- a/frontend/src/lib/api.ts
++++ b/frontend/src/lib/api.ts
+@@ -12,9 +12,11 @@ import type {
+   GraphicOptions,
+   GraphicRequestBody,
+   HealthResponse,
++  MessageResponse,
+   MarketingRequestBody,
+   MarketingResponse,
+   ProcessOptions,
++  SignupResponse,
+   UploadedImage,
+ } from "@/types/api";
+ 
+@@ -202,7 +204,7 @@ export const generateMarketingTemplate = (body: MarketingRequestBody) =>
+ /* ------------------------------------------------------------------ auth */
+ 
+ export const apiSignup = (body: { name: string; email: string; password: string }) =>
+-  apiFetch<AuthResponse>("/api/auth/signup", {
++  apiFetch<SignupResponse>("/api/auth/signup", {
+     method: "POST",
+     headers: JSON_HEADERS,
+     body: JSON.stringify(body),
+@@ -224,3 +226,18 @@ export async function apiLogout(token: string): Promise<void> {
+     headers: { Authorization: `Bearer ${token}` },
+   });
+ }
++
++const postJson = <T,>(path: string, body: unknown) =>
++  apiFetch<T>(path, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) });
++
++export const apiVerifyEmail = (token: string) =>
++  postJson<MessageResponse>("/api/auth/verify-email", { token });
++
++export const apiResendVerification = (email: string) =>
++  postJson<MessageResponse>("/api/auth/resend-verification", { email });
++
++export const apiForgotPassword = (email: string) =>
++  postJson<MessageResponse>("/api/auth/forgot-password", { email });
++
++export const apiResetPassword = (token: string, password: string) =>
++  postJson<MessageResponse>("/api/auth/reset-password", { token, password });
+diff --git a/frontend/src/lib/auth.tsx b/frontend/src/lib/auth.tsx
+index 42a705a..c1d158b 100644
+--- a/frontend/src/lib/auth.tsx
++++ b/frontend/src/lib/auth.tsx
+@@ -20,7 +20,12 @@ interface AuthContextValue {
+   /** True until the saved session (if any) has been checked once on page load. */
+   loading: boolean;
+   login: (email: string, password: string) => Promise<void>;
+-  signup: (name: string, email: string, password: string) => Promise<void>;
++  /** Resolves with verificationRequired=true when the user must confirm their email before signing in. */
++  signup: (
++    name: string,
++    email: string,
++    password: string,
++  ) => Promise<{ verificationRequired: boolean }>;
+   logout: () => Promise<void>;
+   /** The current session token, for calling protected backend routes. */
+   getToken: () => string | null;
+@@ -76,8 +81,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
+   );
+ 
+   const signup = useCallback(
+-    async (name: string, email: string, password: string) =>
+-      accept(await apiSignup({ name, email, password })),
++    async (name: string, email: string, password: string) => {
++      const res = await apiSignup({ name, email, password });
++      if (res.token) accept({ token: res.token, user: res.user });
++      return { verificationRequired: res.verification_required };
++    },
+     [accept],
+   );
+ 
+diff --git a/frontend/src/types/api.ts b/frontend/src/types/api.ts
+index b6b678e..7b5c104 100644
+--- a/frontend/src/types/api.ts
++++ b/frontend/src/types/api.ts
+@@ -234,6 +234,18 @@ export interface AuthUser {
+   id: number;
+   name: string;
+   email: string;
++  email_verified: boolean;
++}
++
++export interface SignupResponse {
++  user: AuthUser;
++  /** True when the account must verify its email first; there is no token in that case. */
++  verification_required: boolean;
++  token: string | null;
++}
++
++export interface MessageResponse {
++  message: string;
+ }
+ 
+ export interface AuthResponse {
