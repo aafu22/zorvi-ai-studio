@@ -22,7 +22,7 @@ from urllib.parse import quote
 
 from app.core.config import get_settings
 from app.core.errors import AppError
-from app.database.db import connect
+from app.database.db import connect, db_path
 from app.schemas.auth import (
     AuthResponse,
     LoginRequest,
@@ -144,26 +144,49 @@ def _issue_email_token(conn, user_id: int, purpose: str, lifetime: timedelta) ->
 
 def _consume_email_token(conn, token: str, purpose: str) -> int:
     """Return the user id for a valid token and use it up. Raises a clear error otherwise."""
+    token_hash = _token_hash(token)
     row = conn.execute(
         "SELECT user_id, expires_at FROM email_tokens WHERE token_hash = ? AND purpose = ?",
-        (_token_hash(token), purpose),
+        (token_hash, purpose),
     ).fetchone()
     if row is None:
+        other = conn.execute("SELECT purpose FROM email_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
+        if other:
+            logger.warning("'%s' link rejected: this token belongs to a '%s' email.", purpose, other["purpose"])
+        else:
+            logger.warning(
+                "'%s' link rejected: token ...%s is NOT in this backend's database (%s). Either it was already "
+                "used, a newer email replaced it, or the email was created by a different backend/database.",
+                purpose,
+                token_hash[:6],
+                db_path(),
+            )
         raise AppError(400, "This link is invalid or has already been used. Please request a new one.")
-    conn.execute("DELETE FROM email_tokens WHERE token_hash = ?", (_token_hash(token),))
+    conn.execute("DELETE FROM email_tokens WHERE token_hash = ?", (token_hash,))
     if datetime.fromisoformat(row["expires_at"]) < _now():
+        logger.warning("'%s' link rejected: the token has expired.", purpose)
         raise AppError(400, "This link has expired. Please request a new one.")
     return row["user_id"]
 
 
-def _email_throttled(email: str) -> bool:
+def _email_throttled(email: str, purpose: str) -> bool:
+    """Allow MAX_EMAILS verification emails and, separately, MAX_EMAILS reset emails per address per window."""
+    key = f"{purpose}:{email}"
     cutoff = time.time() - EMAIL_WINDOW_SECONDS
-    recent = [t for t in _email_requests.get(email, []) if t > cutoff]
+    recent = [t for t in _email_requests.get(key, []) if t > cutoff]
     if len(recent) >= MAX_EMAILS:
-        _email_requests[email] = recent
+        _email_requests[key] = recent
+        logger.warning(
+            "Email limit reached for %s (%s): NO email was sent. Limit is %d per %d minutes; "
+            "wait for the window to pass or restart the backend.",
+            email,
+            purpose,
+            MAX_EMAILS,
+            EMAIL_WINDOW_SECONDS // 60,
+        )
         return True
     recent.append(time.time())
-    _email_requests[email] = recent
+    _email_requests[key] = recent
     return False
 
 
@@ -192,11 +215,12 @@ def signup(req: SignupRequest) -> SignupResponse:
             (name, email, hash_password(req.password), _now().isoformat()),
         )
         user_id = cur.lastrowid
-        _email_requests.setdefault(email, []).append(time.time())
-        _send_verification(conn, user_id, name, email)
         user = UserOut(id=user_id, name=name, email=email, email_verified=False)
         if settings.require_email_verification:
+            _email_requests.setdefault(f"verify:{email}", []).append(time.time())
+            _send_verification(conn, user_id, name, email)
             return SignupResponse(user=user, verification_required=True)
+        # Verification is switched off: no email, the new account is signed in straight away.
         return SignupResponse(user=user, verification_required=False, token=_issue_session(conn, user_id))
 
 
@@ -262,7 +286,7 @@ def verify_email(token: str) -> str:
 
 def resend_verification(email: str) -> str:
     email = email.strip().lower()
-    if not _EMAIL_RE.match(email) or _email_throttled(email):
+    if not _EMAIL_RE.match(email) or _email_throttled(email, "verify"):
         return GENERIC_VERIFY_MESSAGE
     with connect() as conn:
         row = conn.execute(
@@ -279,7 +303,7 @@ def resend_verification(email: str) -> str:
 def forgot_password(email: str) -> str:
     settings = get_settings()
     email = email.strip().lower()
-    if not _EMAIL_RE.match(email) or _email_throttled(email):
+    if not _EMAIL_RE.match(email) or _email_throttled(email, "reset"):
         return GENERIC_RESET_MESSAGE
     with connect() as conn:
         row = conn.execute("SELECT id, name, email FROM users WHERE email = ?", (email,)).fetchone()
@@ -292,6 +316,9 @@ def forgot_password(email: str) -> str:
                 row["email"], row["name"], link, settings.reset_token_minutes
             )
             email_service.send_email(row["email"], subject, body)
+        elif not settings.is_production:
+            # Server-side hint for developers only; the website still gives the same answer for every email.
+            logger.warning("Password reset asked for %s, but no account has that email: nothing was sent.", email)
     return GENERIC_RESET_MESSAGE
 
 
@@ -310,4 +337,5 @@ def reset_password(req: ResetPasswordRequest) -> str:
         conn.execute("DELETE FROM email_tokens WHERE user_id = ?", (user_id,))
     if row:
         _failures.pop(row["email"], None)
+        logger.info("Password reset completed for %s.", row["email"])
     return "Your password has been changed. Please sign in with the new password."

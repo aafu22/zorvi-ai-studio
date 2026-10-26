@@ -15,6 +15,9 @@ export const authButtonClass =
   "flex w-full items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60";
 const linkClass = "font-semibold text-brand-600 hover:text-brand-700";
 
+/** Set to true to show the "Forgot password?" link on the sign-in page again. */
+const SHOW_FORGOT_PASSWORD = false;
+
 export function AuthForm({ mode }: { mode: "login" | "signup" }) {
   const isSignup = mode === "signup";
   const router = useRouter();
@@ -162,7 +165,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
             <label htmlFor="password" className="text-sm font-medium text-slate-700">
               Password
             </label>
-            {!isSignup && (
+            {!isSignup && SHOW_FORGOT_PASSWORD && (
               <Link href="/forgot-password" className="text-sm text-brand-600 hover:text-brand-700">
                 Forgot password?
               </Link>
