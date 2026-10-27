@@ -6,5 +6,7 @@ python-multipart>=0.0.9
 Pillow>=10.4
 pytest>=8.2
 httpx>=0.27
+# PostgreSQL driver, only used when DATABASE_URL is set (for example a Neon database)
+psycopg[binary]>=3.2
 # AI Marketing Brain (Google's current SDK; the older google-generativeai is deprecated)
 google-genai>=1.0

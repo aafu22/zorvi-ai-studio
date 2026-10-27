@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from app.api import auth, brand, copy, demo, export, graphics, health, history, images, marketing, photo_assistant
 from app.core.config import get_settings
 from app.core.errors import AppError
+from app.database.db import describe_database
 from app.services.storage_service import get_storage
 
 logging.basicConfig(level=logging.INFO)
@@ -19,6 +20,13 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    logger.info("Database: %s", describe_database())
+    if settings.brevo_configured:
+        logger.info("Email: sending through the Brevo API (sender %s)", settings.brevo_sender_email or "NOT SET")
+    elif settings.smtp_configured:
+        logger.info("Email: sending through SMTP %s:%s", settings.smtp_host, settings.smtp_port)
+    else:
+        logger.warning("Email: no email service configured, so emails are only PRINTED in this terminal, not sent.")
     # Uploaded files are temporary: remove anything older than FILE_TTL_HOURS on startup.
     removed = get_storage().cleanup_expired(settings.file_ttl_hours)
     if removed:

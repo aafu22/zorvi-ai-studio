@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     # Folder holding the demo product photo. Empty = <repo>/sample_assets.
     sample_assets_dir: str = ""
 
+    # ---- Database
+    # Empty = a SQLite file in the storage folder (fine on your own computer).
+    # A postgresql://... address = PostgreSQL, e.g. a free Neon database. Needed on hosts whose disk is wiped
+    # on restart (Render's free plan), otherwise accounts and saved data disappear.
+    database_url: str = ""
+
     # ---- Accounts: email verification and password reset
     # Public address of the website. Used to build the links inside emails.
     frontend_url: str = "http://localhost:3000"
@@ -44,6 +50,11 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from: str = ""  # e.g. "Zorvi AI Studio <you@example.com>"; empty = smtp_username
     smtp_use_ssl: bool = False  # true = implicit TLS (port 465); false = STARTTLS (port 587)
+    # Brevo (https://www.brevo.com) sends email through a web API instead of SMTP. Use it on hosts that
+    # block SMTP ports (for example Render's free plan). If brevo_api_key is set it is used instead of SMTP.
+    brevo_api_key: str = ""
+    brevo_sender_email: str = ""  # must be a sender you verified in Brevo
+    brevo_sender_name: str = "Zorvi AI Studio"
 
     # ---- HTTPS
     # Redirect plain-HTTP requests to HTTPS. Turn on when the site is served over HTTPS
@@ -73,6 +84,14 @@ class Settings(BaseSettings):
     @property
     def smtp_configured(self) -> bool:
         return bool(self.smtp_host.strip())
+
+    @property
+    def brevo_configured(self) -> bool:
+        return bool(self.brevo_api_key.strip())
+
+    @property
+    def email_configured(self) -> bool:
+        return self.brevo_configured or self.smtp_configured
 
     @property
     def llm_configured(self) -> bool:

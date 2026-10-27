@@ -22,7 +22,7 @@ from urllib.parse import quote
 
 from app.core.config import get_settings
 from app.core.errors import AppError
-from app.database.db import connect, db_path
+from app.database.db import connect, describe_database
 from app.schemas.auth import (
     AuthResponse,
     LoginRequest,
@@ -159,7 +159,7 @@ def _consume_email_token(conn, token: str, purpose: str) -> int:
                 "used, a newer email replaced it, or the email was created by a different backend/database.",
                 purpose,
                 token_hash[:6],
-                db_path(),
+                describe_database(),
             )
         raise AppError(400, "This link is invalid or has already been used. Please request a new one.")
     conn.execute("DELETE FROM email_tokens WHERE token_hash = ?", (token_hash,))
@@ -210,11 +210,18 @@ def signup(req: SignupRequest) -> SignupResponse:
     with connect() as conn:
         if conn.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone():
             raise AppError(409, "An account with this email already exists. Try signing in.")
-        cur = conn.execute(
-            "INSERT INTO users (name, email, password_hash, created_at, email_verified) VALUES (?, ?, ?, ?, 0)",
-            (name, email, hash_password(req.password), _now().isoformat()),
-        )
-        user_id = cur.lastrowid
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (name, email, password_hash, created_at, email_verified) "
+                "VALUES (?, ?, ?, ?, 0) RETURNING id",
+                (name, email, hash_password(req.password), _now().isoformat()),
+            )
+        except Exception as exc:
+            # Two sign-ups with the same email at the same moment: the database's UNIQUE rule catches the second.
+            if "unique" in str(exc).lower():
+                raise AppError(409, "An account with this email already exists. Try signing in.") from exc
+            raise
+        user_id = cur.fetchone()["id"]
         user = UserOut(id=user_id, name=name, email=email, email_verified=False)
         if settings.require_email_verification:
             _email_requests.setdefault(f"verify:{email}", []).append(time.time())

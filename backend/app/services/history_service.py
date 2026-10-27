@@ -84,10 +84,11 @@ def save_campaign(req: SaveCampaignRequest) -> CampaignSummary:
 
     with connect() as db:
         cur = db.execute(
-            "INSERT INTO campaigns (name, product_name, photo_ext, state, created_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO campaigns (name, product_name, photo_ext, state, created_at) VALUES (?, ?, ?, ?, ?) "
+            "RETURNING id",
             (req.name, req.product_name, ext, json.dumps(req.state), created),
         )
-        campaign_id = int(cur.lastrowid)
+        campaign_id = int(cur.fetchone()["id"])
         try:
             photo_path(campaign_id, ext).write_bytes(data)
             _write_thumbnail(data, thumb_path(campaign_id))
