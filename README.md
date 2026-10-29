@@ -7,14 +7,21 @@ A product marketing studio for small businesses. Upload a product photo, get mar
 
 **Live demo:** [zorvi-ai-studio.vercel.app](https://zorvi-ai-studio.vercel.app)
 
+### Create Content
 ![Create Content](docs/screenshots/create-graphic.png)
+Upload one product photo and get an editable social graphic in three sizes (square, portrait, story). Graphics are composed from templates with Pillow, and you can export them as PNG/JPG or a full marketing-kit ZIP.
 
-<p>
-  <img src="docs/screenshots/marketing-brain.png" width="49%" alt="AI Marketing Brain">
-  <img src="docs/screenshots/photo-assistant.png" width="49%" alt="AI Photo Assistant">
-</p>
+### AI Marketing Brain
+![AI Marketing Brain](docs/screenshots/marketing-brain.png)
+Gemini writes captions, hashtags, headlines, calls to action and content ideas for your product. A template-based fallback is clearly labelled as not AI, so the app never presents template text as AI-written.
 
+### AI Photo Assistant
+![AI Photo Assistant](docs/screenshots/photo-assistant.png)
+Analyses a product photo and suggests a title, description, background, lighting and framing. Results are saved in your browser (IndexedDB) and can be sent straight into Create Content.
+
+### Brand Kit
 ![Brand Kit](docs/screenshots/brand-kit.png)
+Each account saves its own colours, font, tone and logo, applied automatically to new graphics and copy. Data is private per user and protected by sign-in.
 
 ## Features
 
