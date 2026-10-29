@@ -1,9 +1,12 @@
 "use client";
 
 import { Archive, Check, FolderPlus, Loader2 } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 
+import { useAuthLinks } from "@/components/RequireSignIn";
 import { exportKit, saveToHistory } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { useCreateFlow } from "@/lib/create-flow";
 import { saveBlob, slugify } from "@/lib/download";
 import type { GraphicSize } from "@/types/api";
@@ -18,6 +21,8 @@ type Msg = { kind: "ok" | "error"; text: string } | null;
 
 /** Step 5 actions: download the whole marketing kit as a ZIP, or save the project to history. */
 export function ExportPanel() {
+  const { user } = useAuth();
+  const authLinks = useAuthLinks();
   const { image, opts, details, style, copy, graphic } = useCreateFlow();
   const [sizes, setSizes] = useState<GraphicSize[]>(["square"]);
   const [includeJson, setIncludeJson] = useState(false);
@@ -127,8 +132,15 @@ export function ExportPanel() {
           Save to history
         </h3>
         <p className="mt-1 text-xs text-slate-500">
-          Keeps this project (photo, settings and text) in the local database so you can reopen it later.
+          Keeps this project (photo, settings and text) in your account so you can reopen it later.
         </p>
+        {!user && (
+          <p className="mt-2 text-xs text-slate-600">
+            <Link href={authLinks.login} className="font-semibold text-brand-700 underline">Sign in</Link> or{" "}
+            <Link href={authLinks.signup} className="font-semibold text-brand-700 underline">create an account</Link>{" "}
+            to save projects. Downloading the kit works without one.
+          </p>
+        )}
         <label htmlFor="save-name" className="mt-3 block text-xs font-semibold text-slate-700">
           Project name
         </label>
@@ -142,7 +154,7 @@ export function ExportPanel() {
         <button
           type="button"
           onClick={() => void save()}
-          disabled={saving || !name.trim()}
+          disabled={saving || !name.trim() || !user}
           className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {saving && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}

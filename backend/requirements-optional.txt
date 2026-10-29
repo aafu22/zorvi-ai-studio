@@ -1,5 +1,0 @@
-# Optional: background removal (CPU only). Large download (~hundreds of MB incl. model).
-# Install only when you want the feature (Phase 6):
-#   pip install -r requirements-optional.txt
-rembg>=2.0.57
-onnxruntime>=1.18

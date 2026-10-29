@@ -1,6 +1,8 @@
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 
+from app.api.auth import get_optional_user
 from app.core.errors import AppError
+from app.schemas.auth import UserOut
 from app.schemas.graphics import GraphicOptions, GraphicRequest
 from app.services import brand_service, graphics_service
 from app.services.storage_service import get_storage
@@ -18,11 +20,16 @@ def graphic_options() -> GraphicOptions:
 
 # Plain `def`: runs in a worker thread so Pillow work does not block other requests.
 @router.post("/render")
-def render_graphic(request: GraphicRequest, preview: bool = False) -> Response:
+def render_graphic(
+    request: GraphicRequest,
+    preview: bool = False,
+    user: UserOut | None = Depends(get_optional_user),
+) -> Response:
     """Render a graphic from the stored product photo.
 
     preview=true returns a smaller image with the identical layout, for fast on-screen updates.
     Without it you get the full-resolution export (1080 px wide).
+    Open to everyone; a signed-in user's own Brand Kit logo is added when show_logo is set.
     """
     path = get_storage().find_original(request.image_id)
     if path is None:
@@ -31,6 +38,6 @@ def render_graphic(request: GraphicRequest, preview: bool = False) -> Response:
         path,
         request,
         preview_width=PREVIEW_WIDTH if preview else None,
-        logo_path=brand_service.logo_path() if request.show_logo else None,
+        logo_path=brand_service.logo_path(user.id) if (request.show_logo and user) else None,
     )
     return Response(content=body, media_type=media_type, headers={"Cache-Control": "no-store"})

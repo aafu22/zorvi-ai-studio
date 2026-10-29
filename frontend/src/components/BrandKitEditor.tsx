@@ -3,10 +3,11 @@
 import { Check, Loader2, RotateCcw, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { AuthedImage } from "@/components/AuthedImage";
 import { TONES } from "@/components/DetailsForm";
 import {
   ApiError,
-  brandLogoUrl,
+  BRAND_LOGO_PATH,
   deleteLogo,
   getBrandKit,
   resetBrandKit,
@@ -287,9 +288,9 @@ export function BrandKitEditor() {
             </p>
             <div className="mt-3 flex h-28 items-center justify-center rounded-xl bg-slate-100">
               {saved?.has_logo ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={brandLogoUrl(logoVersion)}
+                <AuthedImage
+                  path={BRAND_LOGO_PATH}
+                  version={logoVersion}
                   alt="Your brand logo"
                   className="max-h-24 max-w-[80%] object-contain"
                 />

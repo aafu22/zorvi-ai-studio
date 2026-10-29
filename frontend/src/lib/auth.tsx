@@ -10,10 +10,8 @@ import {
   type ReactNode,
 } from "react";
 
-import { ApiError, apiLogin, apiLogout, apiMe, apiSignup } from "@/lib/api";
+import { ApiError, TOKEN_KEY, apiLogin, apiLogout, apiMe, apiSignup } from "@/lib/api";
 import type { AuthResponse, AuthUser } from "@/types/api";
-
-const TOKEN_KEY = "zorvi_auth_token";
 
 interface AuthContextValue {
   user: AuthUser | null;

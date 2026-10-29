@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     # Folder holding the demo product photo. Empty = <repo>/sample_assets.
     sample_assets_dir: str = ""
 
+    # ---- Limits on the AI endpoints (Marketing Brain and Photo Assistant). Every call can cost money,
+    # so each signed-in user gets a small allowance, and there is one daily cap for the whole server.
+    # Counted in memory per backend process: they reset on restart and are per worker.
+    ai_requests_per_minute: int = Field(default=5, ge=1)
+    ai_requests_per_hour: int = Field(default=30, ge=1)
+    ai_daily_limit_total: int = Field(default=500, ge=1)
+
     # ---- Database
     # Empty = a SQLite file in the storage folder (fine on your own computer).
     # A postgresql://... address = PostgreSQL, e.g. a free Neon database. Needed on hosts whose disk is wiped

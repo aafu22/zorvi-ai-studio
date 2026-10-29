@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
-import { assetUrl, deleteFromHistory, listHistory, openFromHistory } from "@/lib/api";
+import { AuthedImage } from "@/components/AuthedImage";
+import { deleteFromHistory, listHistory, openFromHistory } from "@/lib/api";
 import { normalizeSnapshot, writeFlowSnapshot } from "@/lib/create-flow";
 import type { CampaignSummary } from "@/types/api";
 
@@ -66,8 +67,8 @@ export function HistoryList() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">Content History</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Projects you saved are stored in a local database on the machine running the backend. Open one
-          to keep editing or export it again.
+          Projects you saved are stored in your account and are visible only to you. Open one to keep
+          editing or export it again.
         </p>
       </div>
 
@@ -99,12 +100,10 @@ export function HistoryList() {
         <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {items.map((c) => (
             <li key={c.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={assetUrl(c.thumbnail_url)}
+              <AuthedImage
+                path={c.thumbnail_url}
                 alt={`Thumbnail of ${c.name}`}
                 className="aspect-square w-full bg-slate-100 object-cover"
-                loading="lazy"
               />
               <div className="p-4">
                 <p className="truncate text-sm font-semibold text-slate-900">{c.name}</p>

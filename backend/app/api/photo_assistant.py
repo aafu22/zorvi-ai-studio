@@ -1,11 +1,13 @@
 import logging
 from io import BytesIO
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
 from pydantic import ValidationError
 
+from app.api.auth import get_ai_user
 from app.core.config import get_settings
+from app.schemas.auth import UserOut
 from app.schemas.photo_assistant import PhotoAnalysis
 from app.services.marketing.gemini_client import AiProviderError, GeminiClient
 
@@ -16,7 +18,8 @@ SYSTEM_PROMPT = """You are Zorvi AI Studio's product photography assistant. Anal
 
 
 @router.post("/analyze", response_model=PhotoAnalysis)
-async def analyze_photo(file: UploadFile = File(...)) -> PhotoAnalysis:
+async def analyze_photo(file: UploadFile = File(...), _user: UserOut = Depends(get_ai_user)) -> PhotoAnalysis:
+    # Needs a signed-in user within the AI rate limits, because every call uses the Gemini quota.
     settings = get_settings()
     if not settings.gemini_api_key.strip():
         raise HTTPException(status_code=503, detail="AI Photo Assistant needs a Gemini API key. Add GEMINI_API_KEY to backend/.env and restart the backend.")

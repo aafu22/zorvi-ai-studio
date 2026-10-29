@@ -64,12 +64,6 @@ export function BackendStatus() {
             </p>
             <ul className="text-xs text-slate-500">
               <li>
-                Background removal:{" "}
-                {state.data.capabilities.background_removal
-                  ? "installed"
-                  : "not installed (optional)"}
-              </li>
-              <li>
                 LLM provider:{" "}
                 {state.data.capabilities.llm_provider
                   ? "configured"

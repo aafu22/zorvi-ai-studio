@@ -11,7 +11,7 @@ def test_health_ok():
     body = r.json()
     assert body["status"] == "ok"
     assert body["app"] == "Zorvi AI Studio"
-    assert set(body["capabilities"]) == {"llm_provider", "background_removal"}
+    assert set(body["capabilities"]) == {"llm_provider"}
 
 
 def test_cors_allows_local_frontend():

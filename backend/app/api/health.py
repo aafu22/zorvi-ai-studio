@@ -1,5 +1,3 @@
-import importlib.util
-
 from fastapi import APIRouter
 
 from app.core.config import get_settings
@@ -19,7 +17,5 @@ def health() -> HealthResponse:
         environment=settings.app_env,
         capabilities=Capabilities(
             llm_provider=settings.llm_configured,
-            # find_spec checks installation without importing the heavy package
-            background_removal=importlib.util.find_spec("rembg") is not None,
         ),
     )

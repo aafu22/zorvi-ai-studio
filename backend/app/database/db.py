@@ -22,26 +22,6 @@ from urllib.parse import urlparse
 from app.core.config import get_settings
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS brand_kit (
-    id          INTEGER PRIMARY KEY CHECK (id = 1),   -- a single row: one brand per install
-    brand_name  TEXT NOT NULL DEFAULT '',
-    background  TEXT NOT NULL,
-    text_color  TEXT NOT NULL,
-    accent      TEXT NOT NULL,
-    font        TEXT NOT NULL,
-    tone        TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS campaigns (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    name         TEXT NOT NULL,
-    product_name TEXT NOT NULL,
-    photo_ext    TEXT NOT NULL,
-    state        TEXT NOT NULL,                        -- JSON: details, copy, graphic settings...
-    created_at   TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     name          TEXT NOT NULL,
@@ -65,6 +45,27 @@ CREATE TABLE IF NOT EXISTS email_tokens (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS brand_kits (
+    user_id     INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,   -- one brand per account
+    brand_name  TEXT NOT NULL DEFAULT '',
+    background  TEXT NOT NULL,
+    text_color  TEXT NOT NULL,
+    accent      TEXT NOT NULL,
+    font        TEXT NOT NULL,
+    tone        TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER REFERENCES users(id) ON DELETE CASCADE,   -- owner; NULL = saved before accounts owned data
+    name         TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    photo_ext    TEXT NOT NULL,
+    state        TEXT NOT NULL,                        -- JSON: details, copy, graphic settings...
+    created_at   TEXT NOT NULL
+);
 """
 
 
@@ -76,29 +77,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # Accounts created before verification existed are treated as already verified,
         # so nobody is locked out by upgrading.
         conn.execute("UPDATE users SET email_verified = 1")
+    campaign_columns = {row["name"] for row in conn.execute("PRAGMA table_info(campaigns)")}
+    if "user_id" not in campaign_columns:
+        # Projects saved before accounts owned data have no owner, so nobody can see them any more.
+        conn.execute("ALTER TABLE campaigns ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_campaigns_user ON campaigns(user_id)")
 
 
 PG_SCHEMA = """
-CREATE TABLE IF NOT EXISTS brand_kit (
-    id          INTEGER PRIMARY KEY CHECK (id = 1),
-    brand_name  TEXT NOT NULL DEFAULT '',
-    background  TEXT NOT NULL,
-    text_color  TEXT NOT NULL,
-    accent      TEXT NOT NULL,
-    font        TEXT NOT NULL,
-    tone        TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS campaigns (
-    id           SERIAL PRIMARY KEY,
-    name         TEXT NOT NULL,
-    product_name TEXT NOT NULL,
-    photo_ext    TEXT NOT NULL,
-    state        TEXT NOT NULL,
-    created_at   TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS users (
     id             SERIAL PRIMARY KEY,
     name           TEXT NOT NULL,
@@ -122,6 +108,31 @@ CREATE TABLE IF NOT EXISTS email_tokens (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS brand_kits (
+    user_id     INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    brand_name  TEXT NOT NULL DEFAULT '',
+    background  TEXT NOT NULL,
+    text_color  TEXT NOT NULL,
+    accent      TEXT NOT NULL,
+    font        TEXT NOT NULL,
+    tone        TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+    id           SERIAL PRIMARY KEY,
+    user_id      INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    photo_ext    TEXT NOT NULL,
+    state        TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+
+-- Databases created before projects had owners: add the column (those older projects stay hidden).
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_campaigns_user ON campaigns(user_id);
 """
 
 

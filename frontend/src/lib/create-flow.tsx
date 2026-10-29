@@ -14,6 +14,7 @@ import {
 } from "react";
 
 import { getBrandKit, uploadImage } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { getProduct, PRODUCT_HANDOFF_KEY } from "@/lib/product-library";
 import { clearBrainHandoff, readBrainHandoff } from "@/lib/brain-handoff";
 import type {
@@ -251,12 +252,19 @@ export function CreateFlowProvider({ children }: { children: ReactNode }) {
     setHydrated(true);
   }, [loadSnapshot, applyBrainHandoff]);
 
-  // The Brand Kit is optional: if the server is unreachable the flow still works without it.
+  // The Brand Kit belongs to an account and is optional: signed out, or with the server unreachable,
+  // the flow still works without it.
+  const { user, loading: authLoading } = useAuth();
   useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      setBrand(null);
+      return;
+    }
     getBrandKit()
       .then(setBrand)
       .catch(() => setBrand(null));
-  }, []);
+  }, [user, authLoading]);
 
   // A brand-new project starts with your brand name and tone filled in.
   useEffect(() => {

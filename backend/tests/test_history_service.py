@@ -13,6 +13,8 @@ from app.schemas.history import SaveCampaignRequest
 from app.services import history_service
 from app.services.storage_service import get_storage
 
+USER = 1  # the account that owns the projects in these tests
+
 
 def make_upload(color="orange", size=(300, 200)) -> tuple[str, bytes]:
     buf = io.BytesIO()
@@ -22,7 +24,7 @@ def make_upload(color="orange", size=(300, 200)) -> tuple[str, bytes]:
 
 
 def save(image_id, name="Summer launch", **state):
-    return history_service.save_campaign(SaveCampaignRequest(
+    return history_service.save_campaign(USER, SaveCampaignRequest(
         image_id=image_id, name=name, product_name="Ring",
         state=state or {"details": {"product_name": "Ring"}, "style": "luxury"}))
 
@@ -32,7 +34,7 @@ def test_save_list_and_newest_first(storage_env):
     b, _ = make_upload("blue")
     first = save(a, "First")
     second = save(b, "Second")
-    listed = history_service.list_campaigns()
+    listed = history_service.list_campaigns(USER)
     assert [c.name for c in listed] == ["Second", "First"]
     assert listed[0].id == second.id and listed[1].id == first.id
     assert listed[0].thumbnail_url == f"/api/history/{second.id}/thumbnail"
@@ -41,14 +43,14 @@ def test_save_list_and_newest_first(storage_env):
 def test_thumbnail_is_a_small_jpeg(storage_env):
     image_id, _ = make_upload(size=(900, 400))
     summary = save(image_id)
-    with Image.open(history_service.get_thumbnail(summary.id)) as thumb:
+    with Image.open(history_service.get_thumbnail(USER, summary.id)) as thumb:
         assert thumb.format == "JPEG" and thumb.size == (360, 360)
 
 
 def test_open_restores_photo_under_new_id_and_returns_state(storage_env):
     image_id, data = make_upload()
     summary = save(image_id, state_marker="kept", nested={"a": [1, 2]})
-    opened = history_service.open_campaign(summary.id)
+    opened = history_service.open_campaign(USER, summary.id)
     assert opened.image.id != image_id  # fresh temporary upload
     assert get_storage().find_original(opened.image.id).read_bytes() == data
     assert opened.state == {"state_marker": "kept", "nested": {"a": [1, 2]}}
@@ -63,26 +65,26 @@ def test_saved_project_survives_expiry_of_the_temporary_upload(storage_env):
     os.utime(path, (old, old))
     assert get_storage().cleanup_expired(24) == 1  # the temporary upload is removed...
     assert get_storage().find_original(image_id) is None
-    opened = history_service.open_campaign(summary.id)  # ...but the saved project still opens
+    opened = history_service.open_campaign(USER, summary.id)  # ...but the saved project still opens
     assert get_storage().find_original(opened.image.id).read_bytes() == data
 
 
 def test_delete_removes_row_and_files(storage_env):
     image_id, _ = make_upload()
     summary = save(image_id)
-    photo = history_service.get_photo(summary.id)
-    thumb = history_service.get_thumbnail(summary.id)
-    history_service.delete_campaign(summary.id)
+    photo = history_service.get_photo(USER, summary.id)
+    thumb = history_service.get_thumbnail(USER, summary.id)
+    history_service.delete_campaign(USER, summary.id)
     assert not photo.exists() and not thumb.exists()
-    assert history_service.list_campaigns() == []
+    assert history_service.list_campaigns(USER) == []
     with pytest.raises(AppError) as exc:
-        history_service.open_campaign(summary.id)
+        history_service.open_campaign(USER, summary.id)
     assert exc.value.status_code == 404
 
 
 def test_unknown_project_and_unknown_photo(storage_env):
     with pytest.raises(AppError) as e1:
-        history_service.open_campaign(999)
+        history_service.open_campaign(USER, 999)
     assert e1.value.status_code == 404
     with pytest.raises(AppError) as e2:
         save("0" * 32)
@@ -92,10 +94,10 @@ def test_unknown_project_and_unknown_photo(storage_env):
 def test_missing_photo_file_is_reported_cleanly(storage_env):
     image_id, _ = make_upload()
     summary = save(image_id)
-    history_service.get_photo(summary.id).unlink()
+    history_service.get_photo(USER, summary.id).unlink()
     for call in (history_service.open_campaign, history_service.get_photo):
         with pytest.raises(AppError) as exc:
-            call(summary.id)
+            call(USER, summary.id)
         assert exc.value.status_code == 404
 
 
@@ -119,3 +121,32 @@ def test_request_validation():
     with pytest.raises(ValidationError):
         SaveCampaignRequest(image_id="x", name="ok", state={"blob": "x" * 250_000})
     assert SaveCampaignRequest(image_id="x", name="  My   project ", state={}).name == "My project"
+
+
+def test_projects_are_private_to_their_owner(storage_env):
+    image_id, _ = make_upload()
+    mine = save(image_id, "Mine")
+    assert history_service.list_campaigns(2) == []  # another account sees nothing
+    for call in (history_service.open_campaign, history_service.get_thumbnail,
+                 history_service.get_photo, history_service.delete_campaign):
+        with pytest.raises(AppError) as exc:
+            call(2, mine.id)
+        assert exc.value.status_code == 404  # same answer as "does not exist": ids cannot be probed
+    assert [c.name for c in history_service.list_campaigns(USER)] == ["Mine"]  # nothing was deleted
+    assert history_service.get_photo(USER, mine.id).is_file()
+
+
+def test_history_limit_is_per_account(storage_env):
+    image_id, _ = make_upload(size=(20, 20))
+    original = history_service.MAX_CAMPAIGNS
+    history_service.MAX_CAMPAIGNS = 1
+    try:
+        save(image_id, "Only one")
+        with pytest.raises(AppError) as exc:
+            save(image_id, "Too many")
+        assert exc.value.status_code == 409
+        other = history_service.save_campaign(2, SaveCampaignRequest(
+            image_id=image_id, name="Other account", product_name="Ring", state={}))
+        assert other.name == "Other account"  # a full history for one account does not block another
+    finally:
+        history_service.MAX_CAMPAIGNS = original

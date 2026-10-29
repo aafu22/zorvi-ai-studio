@@ -34,10 +34,31 @@ export class ApiError extends Error {
   }
 }
 
+/** Where the browser keeps the sign-in token (see lib/auth.tsx). */
+export const TOKEN_KEY = "zorvi_auth_token";
+
+function storedToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Add the sign-in token (when there is one) to a request. Only ever sent to our own backend, via request(). */
+function withAuth(init?: RequestInit): RequestInit | undefined {
+  const token = storedToken();
+  if (!token) return init;
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
+  return { ...init, headers };
+}
+
 async function request(path: string, init?: RequestInit): Promise<Response> {
   let res: Response;
   try {
-    res = await fetch(`${API_URL}${path}`, init);
+    res = await fetch(`${API_URL}${path}`, withAuth(init));
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") throw e;
     throw new ApiError(
@@ -64,6 +85,14 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return (await (await request(path, init)).json()) as T;
+}
+
+/**
+ * Download a protected file (saved photo, thumbnail, logo) with the sign-in token.
+ * <img src> and <a href> cannot send an Authorization header, so private images are fetched this way.
+ */
+export async function fetchBlob(path: string): Promise<Blob> {
+  return (await request(path)).blob();
 }
 
 export const getHealth = () => apiFetch<HealthResponse>("/api/health");
@@ -144,14 +173,10 @@ export function uploadLogo(file: File): Promise<BrandKit> {
 
 export const deleteLogo = () => apiFetch<BrandKit>("/api/brand-kit/logo", { method: "DELETE" });
 
-/** Pass a changing `version` after an upload so the browser does not show a stale cached logo. */
-export const brandLogoUrl = (version?: string | number) =>
-  `${API_URL}/api/brand-kit/logo${version !== undefined ? `?v=${version}` : ""}`;
+/** Server path of the signed-in user's logo. Load it with <AuthedImage> or fetchBlob(). */
+export const BRAND_LOGO_PATH = "/api/brand-kit/logo";
 
 /* --------------------------------------------------------------- history */
-
-/** Turn a server path such as /api/history/3/thumbnail into a full URL. */
-export const assetUrl = (path: string) => `${API_URL}${path}`;
 
 export const listHistory = () => apiFetch<CampaignSummary[]>("/api/history");
 
@@ -200,6 +225,13 @@ export const generateMarketingTemplate = (body: MarketingRequestBody) =>
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
   });
+
+/** AI Photo Assistant. Needs sign-in; the caller supplies the result type. */
+export function analyzePhoto<T>(file: File, signal?: AbortSignal): Promise<T> {
+  const form = new FormData();
+  form.append("file", file);
+  return apiFetch<T>("/api/photo-assistant/analyze", { method: "POST", body: form, signal });
+}
 
 /* ------------------------------------------------------------------ auth */
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AlertCircle, CheckCircle2, ImagePlus, Loader2, Sparkles, Upload, X } from "lucide-react";
-import { API_URL } from "@/lib/api";
+import { analyzePhoto } from "@/lib/api";
 import Link from "next/link";
 import { createProductId, getProduct, PRODUCT_HANDOFF_KEY, saveProduct, type SavedProduct } from "@/lib/product-library";
 
@@ -83,12 +83,7 @@ export function PhotoAssistant() {
     if (!file) { setError("Upload a product photo first."); return; }
     setBusy(true); setError(""); setResult(null);
     try {
-      const form = new FormData();
-      form.append("file", file);
-      const response = await fetch(`${API_URL}/api/photo-assistant/analyze`, { method: "POST", body: form });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "Photo analysis failed. Please try again.");
-      const analysis = body as PhotoAnalysis;
+      const analysis = await analyzePhoto<PhotoAnalysis>(file);
       setResult(analysis);
       if (savedId && file) {
         await saveProduct({ id: savedId, name: file.name, createdAt: new Date().toISOString(), image: file, imageType: file.type, analysis });

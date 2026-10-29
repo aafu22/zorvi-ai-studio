@@ -1,12 +1,15 @@
 "use client";
 
 import { Loader2, RefreshCw, Send, Sparkles, TriangleAlert } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { CopyButton } from "@/components/CopyButton";
+import { useAuthLinks } from "@/components/RequireSignIn";
 import { generateMarketing, generateMarketingTemplate, getHealth } from "@/lib/api";
 import { writeBrainHandoff } from "@/lib/brain-handoff";
+import { useAuth } from "@/lib/auth";
 import { clip } from "@/lib/graphic-defaults";
 import type {
   CopyDraft,
@@ -98,6 +101,8 @@ function firstSentence(text: string, max: number): string {
 
 export function MarketingBrain() {
   const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
+  const authLinks = useAuthLinks();
   const [brief, setBrief] = useState<MarketingBrief>(DEFAULT_BRIEF);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [source, setSource] = useState<MarketingResponse["source"] | null>(null);
@@ -181,6 +186,18 @@ export function MarketingBrain() {
           Turn your product details into marketing content ready to use.
         </p>
       </div>
+
+      {!authLoading && !user && (
+        <p role="status" className="flex gap-2 rounded-xl border border-brand-100 bg-brand-50 px-4 py-3 text-sm text-slate-800">
+          <Sparkles className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>
+            AI generation needs an account, because every request uses a paid AI model.{" "}
+            <Link href={authLinks.login} className="font-semibold underline">Sign in</Link> or{" "}
+            <Link href={authLinks.signup} className="font-semibold underline">create an account</Link>.
+            Template-based drafts (not AI) work without one.
+          </span>
+        </p>
+      )}
 
       {keyConfigured === false && (
         <p role="status" className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">

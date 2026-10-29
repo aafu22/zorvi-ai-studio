@@ -18,6 +18,17 @@ const linkClass = "font-semibold text-brand-600 hover:text-brand-700";
 /** Set to true to show the "Forgot password?" link on the sign-in page again. */
 const SHOW_FORGOT_PASSWORD = false;
 
+/** Where to go after signing in: the page in ?next=, but only a path on this site. */
+function destination(): string {
+  try {
+    const next = new URLSearchParams(window.location.search).get("next");
+    // "//host" and "/\host" are treated as other sites by browsers, so only a plain "/path" is allowed.
+    return next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : "/";
+  } catch {
+    return "/";
+  }
+}
+
 export function AuthForm({ mode }: { mode: "login" | "signup" }) {
   const isSignup = mode === "signup";
   const router = useRouter();
@@ -34,7 +45,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
 
   // Already signed in? Go to the dashboard.
   useEffect(() => {
-    if (!loading && user) router.replace("/");
+    if (!loading && user) router.replace(destination());
   }, [loading, user, router]);
 
   const onSubmit = async (e: FormEvent) => {
@@ -58,7 +69,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
       } else {
         await login(email.trim(), password);
       }
-      router.replace("/");
+      router.replace(destination());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
       // The backend answers 403 only when the password was right but the email is not verified yet.

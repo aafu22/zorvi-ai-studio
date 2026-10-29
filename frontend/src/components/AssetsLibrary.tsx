@@ -4,36 +4,51 @@ import { Download, ImageIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import { assetUrl, getBrandKit, brandLogoUrl, listHistory } from "@/lib/api";
+import { AuthedImage } from "@/components/AuthedImage";
+import { SignInPrompt } from "@/components/RequireSignIn";
+import { BRAND_LOGO_PATH, fetchBlob, getBrandKit, listHistory } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { saveBlob, slugify } from "@/lib/download";
 import type { BrandKit, CampaignSummary } from "@/types/api";
 import { deleteProduct, getProducts, PRODUCT_HANDOFF_KEY, type SavedProduct } from "@/lib/product-library";
 
 export function AssetsLibrary() {
+  const { user, loading } = useAuth();
   const [items, setItems] = useState<CampaignSummary[] | null>(null);
   const [brand, setBrand] = useState<BrandKit | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedProducts, setSavedProducts] = useState<SavedProduct[]>([]);
 
+  // Photo Assistant products live in this browser, so they show for everyone.
   useEffect(() => {
-    Promise.all([listHistory(), getBrandKit(), getProducts()])
-      .then(([history, kit, products]) => {
+    getProducts()
+      .then(setSavedProducts)
+      .catch(() => setSavedProducts([]));
+  }, []);
+
+  // Saved projects and the brand logo belong to an account.
+  useEffect(() => {
+    if (loading) return;
+    if (!user) {
+      setItems([]);
+      setBrand(null);
+      return;
+    }
+    Promise.all([listHistory(), getBrandKit()])
+      .then(([history, kit]) => {
         setItems(history);
         setBrand(kit);
-        setSavedProducts(products);
       })
       .catch((e) => {
         setItems([]);
         setError(e instanceof Error ? e.message : "Could not load your assets.");
       });
-  }, []);
+  }, [user, loading]);
 
-  const download = async (url: string, filename: string) => {
+  const download = async (path: string, filename: string) => {
     setError(null);
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("Download failed.");
-      saveBlob(await res.blob(), filename);
+      saveBlob(await fetchBlob(path), filename);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Download failed.");
     }
@@ -86,7 +101,13 @@ export function AssetsLibrary() {
         )}
       </section>
 
-      {items === null ? (
+      {!loading && !user ? (
+        <SignInPrompt
+          headingTag="h2"
+          feature="saved projects and your logo"
+          reason="Saved project photos and your brand logo belong to your account. Sign in to see them."
+        />
+      ) : items === null ? (
         <div className="h-48 animate-pulse rounded-2xl bg-slate-200" aria-busy="true" />
       ) : (
         <>
@@ -96,11 +117,10 @@ export function AssetsLibrary() {
                 Brand logo
               </h2>
               <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-card">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={brandLogoUrl()} alt="Your brand logo" className="h-16 w-16 rounded-lg bg-slate-100 object-contain" />
+                <AuthedImage path={BRAND_LOGO_PATH} alt="Your brand logo" className="h-16 w-16 rounded-lg bg-slate-100 object-contain" />
                 <button
                   type="button"
-                  onClick={() => void download(brandLogoUrl(), "brand-logo.png")}
+                  onClick={() => void download(BRAND_LOGO_PATH, "brand-logo.png")}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
                 >
                   <Download className="h-4 w-4" aria-hidden="true" />
@@ -134,19 +154,17 @@ export function AssetsLibrary() {
               <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 {items.map((c) => (
                   <li key={c.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={assetUrl(c.thumbnail_url)}
+                    <AuthedImage
+                      path={c.thumbnail_url}
                       alt={`Photo for ${c.name}`}
                       className="aspect-square w-full bg-slate-100 object-cover"
-                      loading="lazy"
                     />
                     <div className="p-3">
                       <p className="truncate text-sm font-medium text-slate-900">{c.name}</p>
                       <button
                         type="button"
                         onClick={() =>
-                          void download(assetUrl(c.photo_url), `${slugify(c.product_name || c.name)}-original.jpg`)
+                          void download(c.photo_url, `${slugify(c.product_name || c.name)}-original.jpg`)
                         }
                         className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-50"
                       >

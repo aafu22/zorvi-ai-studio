@@ -1,83 +1,98 @@
-# Zorvi AI Studio: Architecture, Dependencies and Plan
+# Zorvi AI Studio: architecture
 
-## 1. Architecture
+## Overview
 
 ```
 Browser (Next.js, port 3000)
-        |  fetch() via ONE configurable base URL (NEXT_PUBLIC_API_URL)
+        |  fetch() through ONE configurable base URL (NEXT_PUBLIC_API_URL)
+        |  adds "Authorization: Bearer <token>" when the person is signed in
         v
 FastAPI (port 8000)
-  api/        HTTP routes only: parse, validate, call services, return
+  api/        HTTP routes only: parse, check sign-in, call services, return
   schemas/    Pydantic request/response models
-  services/   business logic: image processing, copy generation, ZIP export
-  core/       settings (env vars), logging, errors, security helpers
-  database/   SQLite access (brand kit, history)  [Phase 5]
+  services/   business logic: images, graphics, copy, AI, export, history, brand, auth, email
+  core/       settings (env vars), errors, AI rate limiter
+  database/   SQLite (default) or PostgreSQL, one small helper, no ORM
         |
         v
-  storage/ (git-ignored): originals/, processed/, exports/
-  SQLite file (git-ignored)
+  storage/ (git-ignored): originals/, processed/, campaigns/, brand/   +  SQLite file when no DATABASE_URL
+  Google Gemini (optional, server side only)
 ```
 
-Key design decisions:
+Two independent apps live in one monorepo. Each has its own `.env.example` and starts separately.
 
-- **Two independent apps in one monorepo.** Frontend and backend start separately. Each has its own `.env.example`.
-- **Thin routes, fat services.** Routes never contain image or copy logic, so services are unit-testable without HTTP.
-- **Originals are immutable.** Uploads are stored under a server-generated UUID name (no user-supplied filenames touch the filesystem, which prevents path traversal). All edits write new files in `processed/`.
-- **Temporary storage.** Uploaded and generated files are cleaned up after a configurable TTL (Phase 2 onward).
-- **Honest AI labelling.** Copy providers implement one interface (`CopyProvider`). The default `RuleBasedProvider` is labelled "Template-based", never "AI". An LLM provider can be added later without touching routes or UI.
-- **Optional heavy dependencies.** `rembg` lives in `requirements-optional.txt` and is imported lazily only when background removal is requested.
-- **Auth is out of scope** for the MVP (single local user).
+## Who can do what
 
-## 2. Dependency choices
-
-Backend (Python 3.11 target; also works on newer versions):
-
-| Package | Purpose | Phase |
+| Area | Signed out | Signed in |
 |---|---|---|
-| fastapi | API framework | 1 |
-| uvicorn[standard] | ASGI server | 1 |
-| pydantic / pydantic-settings | validation, env config | 1 |
-| python-multipart | file uploads | 2 |
-| Pillow | resize, crop, compose, text overlays | 2 |
-| pytest, httpx | tests | 1 |
-| opencv-python-headless | only if a feature clearly needs it (not required) | optional |
-| rembg + onnxruntime | background removal, CPU only | 6, optional |
+| Create Content (upload, edit photo, copy, graphics, export, demo) | yes | yes |
+| Template-based copy and marketing drafts (not AI) | yes | yes |
+| AI Marketing Brain, AI Photo Assistant | no (401) | yes, rate limited |
+| History (saved projects) | no (401) | own projects only |
+| Brand Kit and logo | no (401) | own kit only |
 
-SQLite uses Python's built-in `sqlite3`, so no ORM is needed.
+Routes that need an account use the `get_current_user` dependency (`app/api/auth.py`). Routes that call a paid
+AI model use `get_ai_user`, which also applies the rate limit. `get_optional_user` is for open routes that add
+something when signed in, such as drawing the person's own logo on a graphic.
 
-Frontend: Next.js (App Router) + TypeScript, Tailwind CSS, lucide-react. No UI kit and no state library; React state and small hooks are enough.
+A project or Brand Kit that belongs to someone else is answered with **404**, the same as one that does not
+exist, so ids cannot be probed.
 
-## 3. Phases
+## Key design decisions
 
-1. **Skeleton** (this milestone): dashboard shell, health endpoint, config, tests, Windows instructions.
-2. Upload, validation, preview, background colour, resize/crop/adjust, download.
-3. Rule-based copy generator + provider interface, editable output, copy buttons.
-4. Template-based graphics (1080x1080, 1080x1350, 1080x1920), editable text/colours, export.
-5. Brand Kit, history (SQLite), ZIP marketing kit, demo mode.
-6. Optional rembg, hardening, README polish, deployment notes.
+- **Thin routes, fat services.** Routes hold no image, copy or AI logic, so services are unit-testable without HTTP.
+- **Originals are immutable.** Uploads get a server-generated UUID name (no user-supplied filename touches the
+  filesystem, which prevents path traversal). Edits write new files.
+- **Temporary uploads.** Files under `originals/` and `processed/` are removed after `FILE_TTL_HOURS`. Only a
+  project the person explicitly saves keeps its own copy of the photo.
+- **Honest AI labelling.** Copy providers share one interface. The default template provider is labelled
+  "Template-based", never "AI". AI output is labelled only when the request really reached Gemini, and the AI
+  endpoints never silently fall back to template text.
+- **Secrets stay on the server.** The Gemini key is read from `backend/.env` and never sent to the browser.
+- **Private images are fetched with the token.** `<img src>` cannot send an Authorization header, so the frontend
+  loads saved photos, thumbnails and the logo through `fetchBlob()` (see `AuthedImage`).
+- **Two databases, one interface.** `database/db.py` gives services the same `execute("... ? ...")` API on SQLite
+  and PostgreSQL (placeholders are converted). Older databases are upgraded automatically on first connect.
+- **Rate limits are in memory.** `core/rate_limit.py` counts per user per minute and hour, plus one daily cap for
+  the whole server. Counters reset on restart and are per worker; use Redis or an upstream limiter if you scale out.
 
-## 4. Target file tree (final)
+## Data model
+
+| Table | Purpose |
+|---|---|
+| `users` | name, lower-cased email, scrypt password hash, `email_verified` |
+| `sessions` | SHA-256 of the session token, owner, expiry (30 days) |
+| `email_tokens` | SHA-256 of single-use verification / password-reset tokens |
+| `brand_kits` | one row per user: brand name, colours, font, tone |
+| `campaigns` | saved projects: owner (`user_id`), name, product, photo extension, JSON state |
+
+Projects saved before accounts owned data have `user_id = NULL` after the upgrade and are no longer visible to
+anyone. Their files remain in `storage/campaigns/` until you delete them.
+
+## Backend layout
 
 ```
-zorvi-ai-studio/
-  README.md  .gitignore
-  docs/ARCHITECTURE.md
-  sample_assets/
-  backend/
-    requirements.txt  requirements-optional.txt  .env.example
-    app/
-      main.py
-      api/        health.py  (later: uploads.py, images.py, copy.py, graphics.py, brand.py, export.py)
-      core/       config.py  errors.py
-      schemas/    health.py
-      services/   (later: image_service.py, copy_service.py, export_service.py)
-      database/   (later: db.py)
-    tests/        test_health.py
-  frontend/
-    package.json  .env.example  next.config.mjs  tailwind.config.ts  tsconfig.json
-    src/
-      app/        layout.tsx  page.tsx  globals.css  create/  brand-kit/  assets/  history/
-      components/ Sidebar.tsx  AppShell.tsx  Stepper.tsx  BackendStatus.tsx  ComingSoon.tsx
-      lib/        api.ts  nav.ts
-      types/      api.ts
+backend/app/
+  main.py            app, CORS, security headers, optional HTTPS redirect, router wiring
+  api/               auth, brand, copy, demo, export, graphics, health, history, images, marketing, photo_assistant
+  core/              config.py (settings), errors.py (AppError), rate_limit.py
+  database/db.py     SQLite / PostgreSQL helper and schema
+  schemas/           request and response models
+  services/          business logic (copywriting/ and marketing/ are packages)
+  tools/check_db.py  run with: python -m app.tools.check_db
+backend/tests/       pytest suite (uses a throw-away storage folder; Gemini is faked)
+backend/assets/fonts bundled open-licence fonts
 ```
+
+## Frontend layout
+
+```
+frontend/src/
+  app/          pages (App Router): create, marketing-brain, photo-assistant, brand-kit, assets, history, auth pages
+  components/   UI; RequireSignIn gates private pages, AuthedImage loads private images
+  lib/          api.ts (single fetch wrapper), auth.tsx (session context), create-flow.tsx (wizard state), helpers
+  types/api.ts  response types shared by the components
+```
+
+Photo Assistant products are kept in the browser's IndexedDB on purpose (they never leave the device except for
+the analysis request), so they are per browser, not per account.

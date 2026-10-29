@@ -1,7 +1,8 @@
-"""Brand Kit: one saved brand (name, colours, font, tone) plus an optional logo.
+"""Brand Kit: one saved brand (name, colours, font, tone) plus an optional logo, per account.
 
-Settings live in SQLite. The logo is a normalised PNG kept at storage/brand/logo.png.
-It is stored until the user removes it, because the Brand Kit exists to be reused.
+Settings live in the database (one row per user). The logo is a normalised PNG kept at
+storage/brand/logo_<user id>.png. It is stored until the user removes it, because the Brand Kit exists
+to be reused. Every function takes the owner's ``user_id`` first, so one account never sees another's brand.
 """
 
 import io
@@ -28,16 +29,20 @@ def _brand_dir() -> Path:
     return path
 
 
-def logo_path() -> Path | None:
-    path = _brand_dir() / "logo.png"
+def _logo_file(user_id: int) -> Path:
+    return _brand_dir() / f"logo_{int(user_id)}.png"
+
+
+def logo_path(user_id: int) -> Path | None:
+    path = _logo_file(user_id)
     return path if path.is_file() else None
 
 
-def get_kit() -> BrandKitOut:
-    has_logo = logo_path() is not None
+def get_kit(user_id: int) -> BrandKitOut:
+    has_logo = logo_path(user_id) is not None
     logo_url = "/api/brand-kit/logo" if has_logo else None
     with connect() as db:
-        row = db.execute("SELECT * FROM brand_kit WHERE id = 1").fetchone()
+        row = db.execute("SELECT * FROM brand_kits WHERE user_id = ?", (user_id,)).fetchone()
     if row is None:
         return BrandKitOut(configured=False, has_logo=has_logo, logo_url=logo_url)
     return BrandKitOut(
@@ -53,33 +58,33 @@ def get_kit() -> BrandKitOut:
     )
 
 
-def save_kit(kit: BrandKitIn) -> BrandKitOut:
+def save_kit(user_id: int, kit: BrandKitIn) -> BrandKitOut:
     with connect() as db:
         db.execute(
             """
-            INSERT INTO brand_kit (id, brand_name, background, text_color, accent, font, tone, updated_at)
-            VALUES (1, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
+            INSERT INTO brand_kits (user_id, brand_name, background, text_color, accent, font, tone, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
                 brand_name = excluded.brand_name, background = excluded.background,
                 text_color = excluded.text_color, accent = excluded.accent,
                 font = excluded.font, tone = excluded.tone, updated_at = excluded.updated_at
             """,
             (
-                kit.brand_name, kit.colors.background, kit.colors.text, kit.colors.accent,
+                user_id, kit.brand_name, kit.colors.background, kit.colors.text, kit.colors.accent,
                 kit.font, kit.tone, datetime.now(timezone.utc).isoformat(timespec="seconds"),
             ),
         )
-    return get_kit()
+    return get_kit(user_id)
 
 
-def delete_kit() -> None:
+def delete_kit(user_id: int) -> None:
     """Remove saved settings and the logo (back to a blank Brand Kit)."""
     with connect() as db:
-        db.execute("DELETE FROM brand_kit WHERE id = 1")
-    delete_logo()
+        db.execute("DELETE FROM brand_kits WHERE user_id = ?", (user_id,))
+    delete_logo(user_id)
 
 
-def save_logo(data: bytes) -> BrandKitOut:
+def save_logo(user_id: int, data: bytes) -> BrandKitOut:
     """Validate, normalise (PNG, max 600 px, EXIF rotation applied) and store the logo."""
     if len(data) > LOGO_MAX_BYTES:
         raise AppError(413, "Logo is too large. The limit is 2 MB.")
@@ -91,15 +96,15 @@ def save_logo(data: bytes) -> BrandKitOut:
         raise AppError(400, "That file is not a valid image.") from exc
     logo.thumbnail((LOGO_MAX_SIDE, LOGO_MAX_SIDE), Image.Resampling.LANCZOS)
 
-    target = _brand_dir() / "logo.png"
+    target = _logo_file(user_id)
     temp = target.with_suffix(".tmp")
     logo.save(temp, format="PNG")
     os.replace(temp, target)  # atomic: a reader never sees a half-written logo
-    return get_kit()
+    return get_kit(user_id)
 
 
-def delete_logo() -> BrandKitOut:
-    path = logo_path()
+def delete_logo(user_id: int) -> BrandKitOut:
+    path = logo_path(user_id)
     if path is not None:
         path.unlink(missing_ok=True)
-    return get_kit()
+    return get_kit(user_id)

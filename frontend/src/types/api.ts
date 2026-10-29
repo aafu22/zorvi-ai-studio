@@ -5,7 +5,6 @@ export interface HealthResponse {
   environment: string;
   capabilities: {
     llm_provider: boolean;
-    background_removal: boolean;
   };
 }
 

@@ -1,8 +1,11 @@
-"""Saved projects ("history").
+"""Saved projects ("history"), private to the account that saved them.
 
 Unlike temporary uploads, a saved project keeps its own copy of the photo so it can be
 reopened after the 24 hour upload expiry. This is stored only because the user pressed
 Save, and deleting the project deletes the photo and thumbnail too.
+
+Every function takes the owner's ``user_id`` first. A project that belongs to someone else is reported as
+"not found" (404), the same as one that does not exist, so ids cannot be probed.
 """
 
 import io
@@ -24,7 +27,7 @@ from app.schemas.images import UploadResponse
 from app.services import image_service
 from app.services.storage_service import get_storage
 
-MAX_CAMPAIGNS = 50
+MAX_CAMPAIGNS = 50  # per account
 THUMB_SIZE = (360, 360)
 EXTENSION_BY_FORMAT = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
 
@@ -55,26 +58,30 @@ def _summary(row) -> CampaignSummary:
     )
 
 
-def _row(campaign_id: int):
+def _row(user_id: int, campaign_id: int):
     with connect() as db:
-        row = db.execute("SELECT * FROM campaigns WHERE id = ?", (campaign_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM campaigns WHERE id = ? AND user_id = ?", (campaign_id, user_id)
+        ).fetchone()
     if row is None:
         raise AppError(404, "Saved project not found.")
     return row
 
 
-def list_campaigns() -> list[CampaignSummary]:
+def list_campaigns(user_id: int) -> list[CampaignSummary]:
     with connect() as db:
-        rows = db.execute("SELECT * FROM campaigns ORDER BY id DESC LIMIT ?", (MAX_CAMPAIGNS,)).fetchall()
+        rows = db.execute(
+            "SELECT * FROM campaigns WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, MAX_CAMPAIGNS)
+        ).fetchall()
     return [_summary(r) for r in rows]
 
 
-def save_campaign(req: SaveCampaignRequest) -> CampaignSummary:
+def save_campaign(user_id: int, req: SaveCampaignRequest) -> CampaignSummary:
     source = get_storage().find_original(req.image_id)
     if source is None:
         raise AppError(404, "Image not found. It may have expired; please upload it again.")
     with connect() as db:
-        count = db.execute("SELECT COUNT(*) FROM campaigns").fetchone()[0]
+        count = db.execute("SELECT COUNT(*) FROM campaigns WHERE user_id = ?", (user_id,)).fetchone()[0]
     if count >= MAX_CAMPAIGNS:
         raise AppError(409, f"History is full ({MAX_CAMPAIGNS} projects). Delete an older project first.")
 
@@ -84,9 +91,9 @@ def save_campaign(req: SaveCampaignRequest) -> CampaignSummary:
 
     with connect() as db:
         cur = db.execute(
-            "INSERT INTO campaigns (name, product_name, photo_ext, state, created_at) VALUES (?, ?, ?, ?, ?) "
-            "RETURNING id",
-            (req.name, req.product_name, ext, json.dumps(req.state), created),
+            "INSERT INTO campaigns (user_id, name, product_name, photo_ext, state, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+            (user_id, req.name, req.product_name, ext, json.dumps(req.state), created),
         )
         campaign_id = int(cur.fetchone()["id"])
         try:
@@ -112,9 +119,9 @@ def _remove_files(campaign_id: int, ext: str) -> None:
     thumb_path(campaign_id).unlink(missing_ok=True)
 
 
-def open_campaign(campaign_id: int) -> OpenCampaignResponse:
+def open_campaign(user_id: int, campaign_id: int) -> OpenCampaignResponse:
     """Restore the saved photo as a fresh temporary upload and return the saved settings."""
-    row = _row(campaign_id)
+    row = _row(user_id, campaign_id)
     path = photo_path(campaign_id, row["photo_ext"])
     if not path.is_file():
         raise AppError(404, "The saved photo for this project is missing.")
@@ -130,24 +137,24 @@ def open_campaign(campaign_id: int) -> OpenCampaignResponse:
     )
 
 
-def get_thumbnail(campaign_id: int) -> Path:
-    _row(campaign_id)
+def get_thumbnail(user_id: int, campaign_id: int) -> Path:
+    _row(user_id, campaign_id)
     path = thumb_path(campaign_id)
     if not path.is_file():
         raise AppError(404, "Thumbnail not found.")
     return path
 
 
-def get_photo(campaign_id: int) -> Path:
-    row = _row(campaign_id)
+def get_photo(user_id: int, campaign_id: int) -> Path:
+    row = _row(user_id, campaign_id)
     path = photo_path(campaign_id, row["photo_ext"])
     if not path.is_file():
         raise AppError(404, "The saved photo for this project is missing.")
     return path
 
 
-def delete_campaign(campaign_id: int) -> None:
-    row = _row(campaign_id)
+def delete_campaign(user_id: int, campaign_id: int) -> None:
+    row = _row(user_id, campaign_id)
     with connect() as db:
-        db.execute("DELETE FROM campaigns WHERE id = ?", (campaign_id,))
+        db.execute("DELETE FROM campaigns WHERE id = ? AND user_id = ?", (campaign_id, user_id))
     _remove_files(campaign_id, row["photo_ext"])

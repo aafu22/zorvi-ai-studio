@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Header, Response
+from fastapi import APIRouter, Depends, Header, Response
 
+from app.core import rate_limit
 from app.core.errors import AppError
 from app.schemas.auth import (
     AuthResponse,
@@ -34,6 +35,21 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
     user = auth_service.user_for_token(token) if token else None
     if user is None:
         raise AppError(401, "Please sign in to continue.")
+    return user
+
+
+def get_optional_user(authorization: str | None = Header(default=None)) -> UserOut | None:
+    """Like get_current_user, but returns None for signed-out visitors instead of failing.
+
+    For routes that work for everyone and only add something extra (such as the Brand Kit logo) when signed in.
+    """
+    token = _bearer_token(authorization)
+    return auth_service.user_for_token(token) if token else None
+
+
+def get_ai_user(user: UserOut = Depends(get_current_user)) -> UserOut:
+    """Signed-in user who is also within the AI usage limits. Use on every route that calls a paid AI model."""
+    rate_limit.check_ai_limit(user.id)
     return user
 
 
