@@ -7,10 +7,14 @@ A product marketing studio for small businesses. Upload a product photo, get mar
 
 **Live demo:** [zorvi-ai-studio.vercel.app](https://zorvi-ai-studio.vercel.app)
 
-<!-- Add 2-3 screenshots here before publishing, e.g.:
-![Create Content](docs/screenshots/create.png)
-![AI Marketing Brain](docs/screenshots/marketing-brain.png)
--->
+![Create Content](docs/screenshots/create-graphic.png)
+
+<p>
+  <img src="docs/screenshots/marketing-brain.png" width="49%" alt="AI Marketing Brain">
+  <img src="docs/screenshots/photo-assistant.png" width="49%" alt="AI Photo Assistant">
+</p>
+
+![Brand Kit](docs/screenshots/brand-kit.png)
 
 ## Features
 
