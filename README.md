@@ -7,6 +7,12 @@ A product marketing studio for small businesses. Upload a product photo, get mar
 
 **Live demo:** [zorvi-ai-studio.vercel.app](https://zorvi-ai-studio.vercel.app)
 
+> **Try it in 1 minute**
+> 1. Open the app and click **Try the demo** to load a sample product. No account is needed to create copy, design a graphic and export a kit.
+> 2. **Create a free account** to unlock History, Brand Kit and the AI features (Marketing Brain and Photo Assistant).
+>
+> The backend runs on a free host, so the **first visit can take about 30 seconds** to wake up. If something looks stuck, wait a moment and refresh.
+
 ### Create Content
 ![Create Content](docs/screenshots/create-graphic.png)
 Upload one product photo and get an editable social graphic in three sizes (square, portrait, story). Graphics are composed from templates with Pillow, and you can export them as PNG/JPG or a full marketing-kit ZIP.
